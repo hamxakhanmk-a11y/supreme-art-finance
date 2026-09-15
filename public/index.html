@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Job Tracker Supreme Art</title>
+<title>Supreme Art Finance</title>
 <!-- Declaring the icon explicitly stops browsers falling back to a bare
      /favicon.ico request, which used to hit the catch-all route and serve
      the entire 1.2 MB index.html as an "icon". -->
@@ -2817,7 +2817,7 @@ td.jc-details-cell > input[type="text"] { padding-right: 20px; }
 <span id="save-indicator" style="display:inline-flex;align-items:center;gap:6px;opacity:0;">&#8635; Saving…</span>
 
 <div id="login-screen" style="display:none; position:fixed; inset:0; background:var(--bg3); z-index:998; align-items:center; justify-content:center; flex-direction:column; gap:18px; padding:24px; text-align:center;">
-  <div style="font-size:22px;font-weight:600;color:var(--text);">Job Tracker <span style="color:var(--blue-text);">Supreme Art</span></div>
+  <div style="font-size:22px;font-weight:600;color:var(--text);">Supreme Art <span style="color:var(--blue-text);">Finance</span></div>
   <div style="font-size:13px;color:var(--text2);max-width:380px;">Sign in with your authorized Google account to continue. If you haven't been invited yet, please ask your administrator.</div>
   <div id="google-signin-btn" style="margin-top:8px;"></div>
   <div id="login-error" style="font-size:13px;color:#A32D2D;display:none;max-width:380px;"></div>
@@ -16802,7 +16802,7 @@ function printTnDocument(tnNo, d) {
 
   document.title = '';
   window.print();
-  const cleanup = () => { area.innerHTML = ''; document.title = 'Job Tracker Supreme Art'; style.remove(); };
+  const cleanup = () => { area.innerHTML = ''; document.title = 'Supreme Art Finance'; style.remove(); };
   window.addEventListener('afterprint', cleanup, { once: true });
   setTimeout(cleanup, 30000);
 }
@@ -17407,7 +17407,7 @@ function printStickers() {
       '}';
   document.head.appendChild(stkPageStyle);
   // Same title-blank trick the job-card printer uses so the browser's
-  // default page header ("Job Tracker Supreme Art") doesn't print on
+  // default page header ("Supreme Art Finance") doesn't print on
   // every sticker sheet.
   const prevTitle = document.title;
   document.title = ' ';
@@ -23665,7 +23665,7 @@ function printJobCard(id) {
   fitPrintCardText();
 
   // Browsers print the document.title in the page header by default
-  // ("Job Tracker Supreme Art"). Blank the title for the duration of
+  // ("Supreme Art Finance"). Blank the title for the duration of
   // the print so the header is empty. Date + URL + page number can
   // ONLY be removed by the user unchecking "Headers and footers" in
   // Chrome's print dialog (More settings → Headers and footers).
