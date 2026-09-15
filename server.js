@@ -258,6 +258,17 @@ function getDb() {
 // new groups' rows at all.
 const SCHEMA_VERSION = 'v2026-09-13-role-permissions-24groups';
 
+// This app shares its Neon database with the Job Tracker app (it started as
+// a copy of it). Both run initDb() at boot, so they must NOT share the one
+// 'schema_version' row in schema_meta: whichever app stamped it last would
+// make the other see a mismatch and replay all ~30 CREATE/ALTER statements
+// on every cold start, ping-ponging the value forever — the same old-code/
+// new-code race documented on the artline_settings rename below, but
+// permanent. Finance stamps its own key instead, so bumping SCHEMA_VERSION
+// here only replays migrations for THIS app and never disturbs the
+// tracker's marker.
+const SCHEMA_VERSION_KEY = 'schema_version_finance';
+
 // Editable role-permission groups behind the Access Register's "click to
 // change" cells. Nearly every capability in the register is here — the
 // ~50 rows collapse onto these because many share one real function
@@ -496,7 +507,7 @@ async function initDb() {
     // marker, but CREATE TABLE IF NOT EXISTS is idempotent so it's cheap
     // on warm DBs (one roundtrip vs. the ~30 we'd otherwise run).
     await sql`CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT)`;
-    const cur = await sql`SELECT value FROM schema_meta WHERE key = 'schema_version'`;
+    const cur = await sql`SELECT value FROM schema_meta WHERE key = ${SCHEMA_VERSION_KEY}`;
     if (cur.length && cur[0].value === SCHEMA_VERSION) return;
     // Single-row counter for shade-card Delivery Challan numbers
     // (DC-01, DC-02, …) — see nextShadeCardDcNumber(). Seeded to start
@@ -1373,7 +1384,7 @@ async function initDb() {
     // Stamp the schema version so future cold starts hit the fast-path
     // short-circuit at the top of initDb instead of replaying every ALTER.
     await sql`
-      INSERT INTO schema_meta (key, value) VALUES ('schema_version', ${SCHEMA_VERSION})
+      INSERT INTO schema_meta (key, value) VALUES (${SCHEMA_VERSION_KEY}, ${SCHEMA_VERSION})
       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
     `;
     console.log('Database ready (schema ' + SCHEMA_VERSION + ')');
