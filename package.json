@@ -1,7 +1,7 @@
 {
-  "name": "supreme-art-tracker",
+  "name": "supreme-art-finance",
   "version": "1.0.0",
-  "description": "Job Tracker for Supreme Art Packaging Press",
+  "description": "Finance app for Supreme Art Private Limited",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
