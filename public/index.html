@@ -4285,6 +4285,7 @@ function roleLabel(role) {
     production_manager: 'Production Manager',
     store_manager: 'Store Manager',
     finance: 'Finance',
+    procurement: 'Procurement',
     operator: 'Operator',
     client: 'Client',
     // Legacy role names that may still appear on un-migrated user rows.
@@ -23914,7 +23915,7 @@ async function loadUsersAndAudit() {
     // this WHOLE Promise.all and silently broke the rest of the Users tab
     // (Authorized Users + Recent Activity) for any CEO account. Matching
     // the server's real behavior: CEO no longer requests this at all.
-    const wantsOperators = hasPerm('operator_admin');
+    const wantsOperators = false; // Floor Operators roster is tracker-only
     if (wantsOperators) reqs.push(api('GET', '/api/operators'));
     const results = await Promise.all(reqs);
     let i = 0;
@@ -26056,7 +26057,7 @@ function renderUsersTab() {
           ? `<span class="inv-badge" style="text-transform:uppercase;font-size:10px;letter-spacing:0.04em;background:var(--bg2);color:var(--text2);padding:4px 10px;border-radius:10px;">${esc(visibleRolesOf(u).map(roleLabel).join(' + '))}${u.client_company ? ' · '+esc(u.client_company) : ''}</span>`
           : `<div class="user-role-checks" data-uid="${u.id}" style="display:flex;flex-direction:column;gap:4px;max-width:300px;">
               <div style="display:flex;flex-wrap:wrap;gap:4px 10px;">
-                ${(isSuperAdmin() ? [['super_admin','Super Admin']] : []).concat([['finance','Finance']]).map(([r,lbl]) => `
+                ${(isSuperAdmin() ? [['super_admin','Super Admin']] : []).concat([['finance','Finance'],['procurement','Procurement']]).map(([r,lbl]) => `
                   <label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;white-space:nowrap;">
                     <input type="checkbox" value="${r}" ${userRolesOf(u).includes(r)?'checked':''}
                            ${isMe && (r==='admin' || r==='super_admin') ? 'disabled' : ''}
@@ -26108,7 +26109,6 @@ function renderUsersSubtabs() {
   bar.style.display = 'flex';
   bar.innerHTML = `
     <button class="tab ${usersSubTab === 'team' ? 'active' : ''}" onclick="setUsersSubTab('team')">Team</button>
-    <button class="tab ${usersSubTab === 'operators' ? 'active' : ''}" onclick="setUsersSubTab('operators')">Operators</button>
     <button class="tab ${usersSubTab === 'activity' ? 'active' : ''}" onclick="setUsersSubTab('activity')">Activity Log</button>
     <button class="tab ${usersSubTab === 'access-register' ? 'active' : ''}" onclick="setUsersSubTab('access-register')">Access Register</button>
   `;
@@ -26119,6 +26119,8 @@ function renderUsersSubtabs() {
 // sync locally after each edit so re-rendering doesn't need a re-fetch.
 let _roleMatrixData = null;
 async function setUsersSubTab(tab) {
+  // Floor Operators (the Station PIN roster) is tracker-only.
+  if (tab === 'operators') tab = 'team';
   usersSubTab = tab;
   const teamEl = document.getElementById('users-team-section');
   const opsEl  = document.getElementById('users-operators-section');
@@ -26129,12 +26131,12 @@ async function setUsersSubTab(tab) {
     // No subtab bar for anyone but Super Admin — keep the original flat
     // page everyone else has always had: Team + Operators + Activity all
     // stacked together, Access Register never shown.
-    teamEl.style.display = ''; opsEl.style.display = ''; actEl.style.display = '';
+    teamEl.style.display = ''; opsEl.style.display = 'none'; actEl.style.display = '';
     accEl.style.display = 'none';
     return;
   }
   teamEl.style.display = tab === 'team'           ? '' : 'none';
-  opsEl.style.display  = tab === 'operators'       ? '' : 'none';
+  opsEl.style.display  = 'none';
   actEl.style.display  = tab === 'activity'        ? '' : 'none';
   accEl.style.display  = tab === 'access-register' ? '' : 'none';
   if (tab === 'access-register' && !accEl.dataset.rendered) {
@@ -26174,9 +26176,7 @@ const ACC_REG_TABS = [
   ['jobs', 'Jobs'],
   ['inventory', 'Inventory'],
   ['reports', 'Reports'],
-  ['station', 'Station'],
   ['users', 'Users'],
-  ['client-view', 'Client View'],
 ];
 // Keys + order for the Jobs tab, matching the exact button list given:
 // Edit, History, Link Job, Print, Block, Delete, Create Mil Job, New Job,
@@ -26199,7 +26199,6 @@ const ACC_JOBS_TAB_ROWS = [
   { key: 'job_btn_record_delivery', type: 'button' },
   { key: 'job_btn_delete_delivery', type: 'button' },
   { key: 'job_btn_adjust',          type: 'button' },
-  { key: 'job_btn_stickers',        type: 'button' },
 ];
 // Inventory tab — Imports lives inside here too (per request), as its own
 // tab-level view/hidden row right under Inventory's own. 'button-30day' is
@@ -26223,17 +26222,8 @@ const ACC_INVENTORY_TAB_ROWS = [
 // so there's no "edit" tier to give any of them.
 const ACC_REPORTS_TAB_ROWS = [
   { key: 'reports_tab_access',              type: 'tab' },
-  { key: 'rpt_stock_in',                    type: 'tab' },
-  { key: 'rpt_stock_out',                   type: 'tab' },
-  { key: 'rpt_stock_summary',               type: 'tab' },
-  { key: 'rpt_current_balance',             type: 'tab' },
-  { key: 'rpt_offcut_consumption',          type: 'tab' },
   { key: 'rpt_manual_job_card_consumption', type: 'tab' },
   { key: 'rpt_jobs_report',                 type: 'tab' },
-  { key: 'rpt_production_report',           type: 'tab' },
-  { key: 'rpt_daily_production_report',     type: 'tab' },
-  { key: 'rpt_jobs_archive',                type: 'tab' },
-  { key: 'rpt_imports_archive',             type: 'tab' },
 ];
 // Users tab. user_accessregister_tab_access is special-cased in
 // accGroupRow: every role except super_admin renders as a locked HIDDEN
@@ -26248,7 +26238,6 @@ const ACC_USERS_TAB_ROWS = [
   { key: 'user_btn_block',                 type: 'button' },
   { key: 'user_btn_remove',                type: 'button' },
   { key: 'user_btn_invite',                type: 'button' },
-  { key: 'user_btn_operators',             type: 'button' },
   { key: 'user_activitylog_tab_access',    type: 'tab' },
   { key: 'user_accessregister_tab_access', type: 'tab' },
 ];
@@ -26306,10 +26295,9 @@ async function cycleRolePermission(key, role) {
   showSaving(false);
 }
 
-// Column order for every row — Super Admin and Client stay locked (Super
-// Admin always has full access; Client is never part of this system at
-// all — see roleHasPermission's hard client block server-side).
-const COLUMN_ROLES = ['super_admin', 'admin', 'ceo', 'production_manager', 'store_manager', 'finance', 'operator', 'client'];
+// Column order for every row — this app's roles only. Super Admin stays
+// locked (always full access); Finance and Procurement are editable.
+const COLUMN_ROLES = ['super_admin', 'finance', 'procurement'];
 // Rows where every role except Super Admin is force-locked to HIDDEN,
 // no matter what's saved in the DB — currently just the Access Register
 // row itself, so no role can ever grant itself (or another role) a way
@@ -26330,7 +26318,6 @@ function accGroupRow(matrixData, key, rowType) {
   const cellClass = (level) => rowType === 'tab' ? (level === 'view' ? 'allow' : 'deny') : ({ yes: 'allow', view: 'partial', hidden: 'deny', '30-day': 'partial' }[level] || 'deny');
   const cells = COLUMN_ROLES.map(role => {
     if (role === 'super_admin') return `<td class="acc-cell allow locked" title="Super Admin always has this">${rowType === 'tab' ? 'VIEW' : 'EDIT'}</td>`;
-    if (role === 'client') return `<td class="acc-cell deny locked" title="Client is not part of this system — see the Client View portal's own separate access">HIDDEN</td>`;
     if (ACC_SUPER_ADMIN_ONLY_ROWS.has(key)) return `<td class="acc-cell deny locked" title="Access Register is Super Admin only — this can't be changed">HIDDEN</td>`;
     const level = group[role] || 'hidden';
     return `<td class="acc-cell ${cellClass(level)} editable" onclick="cycleRolePermission('${key}','${role}')" title="Click to change">${ACC_LEVEL_LABEL[level] || level.toUpperCase()}</td>`;
@@ -26348,13 +26335,8 @@ function renderAccessRegisterHtml(matrixData) {
             <tr>
               <th>Capability</th>
               <th>Super<br>Admin</th>
-              <th>Admin</th>
-              <th>CEO</th>
-              <th>Production<br>Manager</th>
-              <th>Store<br>Manager</th>
               <th>Finance</th>
-              <th>Operator</th>
-              <th>Client</th>
+              <th>Procurement</th>
             </tr>
           </thead>
           <tbody>${rowDefs.map(r => accGroupRow(matrixData, r.key, r.type)).join('')}</tbody>
@@ -26363,7 +26345,7 @@ function renderAccessRegisterHtml(matrixData) {
     : `<div class="empty" style="padding:32px;text-align:center;">This section hasn't been rebuilt yet.</div>`;
 
   return `
-  <div class="acc-reg-dek">One tab per module. The tab's own row (e.g. "Jobs tab") controls whether that whole tab is visible at all — View or Hidden. Every button inside it has its own row: Edit (full access), View (visible but disabled), or Hidden (not shown at all) — both View and Hidden are meant to stay fully blocked server-side once wired up, regardless of what's shown client-side. Client is not part of this table — see the Client View portal's own separate, unrelated access.</div>
+  <div class="acc-reg-dek">One tab per module. The tab's own row (e.g. "Jobs tab") controls whether that whole tab is visible at all — View or Hidden. Every button inside it has its own row: Edit (full access), View (visible but disabled), or Hidden (not shown at all) — both View and Hidden are meant to stay fully blocked server-side once wired up, regardless of what's shown client-side. This register is Supreme Art Finance's own — changing it never changes the Job Tracker's access.</div>
   <div class="acc-reg-legend">
     <span><span class="acc-swatch allow"></span>View (tab) / Edit (button) — full access</span>
     <span><span class="acc-swatch partial"></span>View (button) — visible, disabled</span>
@@ -26381,7 +26363,7 @@ function openInviteUser() {
     <div class="form-group"><label class="form-label">Email *</label><input type="email" id="invite-email" placeholder="someone@gmail.com"></div>
     <div class="form-group"><label class="form-label">Roles <span style="font-weight:400;color:var(--text2);">(pick one or more — access combines)</span></label>
       <div id="invite-roles" style="display:flex;flex-direction:column;gap:6px;">
-        ${(isSuperAdmin() ? [['super_admin','Super Admin',false]] : []).concat([['finance','Finance',true]]).map(([r,lbl,def]) => `
+        ${(isSuperAdmin() ? [['super_admin','Super Admin',false]] : []).concat([['finance','Finance',true],['procurement','Procurement',false]]).map(([r,lbl,def]) => `
           <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;">
             <input type="checkbox" value="${r}" ${def?'checked':''} onchange="onInviteRolesChanged()"> ${lbl}
           </label>`).join('')}

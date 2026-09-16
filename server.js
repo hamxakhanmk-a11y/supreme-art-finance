@@ -264,7 +264,8 @@ function getDb() {
 // new groups' rows at all.
 // Bumped for the finance schema: finance.users / finance.sessions /
 // finance.audit_log — this app's own sign-in list, separate from the tracker's.
-const SCHEMA_VERSION = 'v2026-09-16-finance-users';
+// Bumped again for finance.role_permissions and the Procurement role.
+const SCHEMA_VERSION = 'v2026-09-16-finance-procurement';
 
 // This app shares its Neon database with the Job Tracker app (it started as
 // a copy of it). Both run initDb() at boot, so they must NOT share the one
@@ -291,6 +292,11 @@ const SCHEMA_VERSION_KEY = 'schema_version_finance';
 // once; the live source of truth after that is the table itself.
 // `extra` lists any additional selectable level valid ONLY for that
 // group (currently just inventory_reverse's '30-day').
+// Finance's Access Register covers exactly these roles (Super Admin always
+// has everything and isn't editable). Declared before initDb runs, since
+// initDb seeds finance.role_permissions for them.
+const FINANCE_PERMISSION_ROLES = ['finance', 'procurement'];
+
 const ROLE_PERMISSION_DEFAULTS = {
   job_write:            { label: 'Create, edit/save, move, duplicate, link/unlink, block/unblock a job, or manage a MIL group', levels: { admin: 'yes', production_manager: 'yes' } },
   job_print:            { label: 'Print a job card (display only — not independently server-enforced)', levels: { admin: 'yes', production_manager: 'yes', ceo: 'yes' } },
@@ -426,7 +432,7 @@ async function refreshRolePermissions() {
   try {
     await dbReady;
     const sql = getDb();
-    const rows = await sql`SELECT permission_key, role, level FROM role_permissions`;
+    const rows = await sql`SELECT permission_key, role, level FROM finance.role_permissions`;
     const next = {};
     for (const key of Object.keys(ROLE_PERMISSION_DEFAULTS)) next[key] = {};
     for (const r of rows) {
@@ -1369,25 +1375,9 @@ async function initDb() {
     // currently have a capability get a seeded 'yes' row, so this seed
     // reproduces today's exact hardcoded defaults (see ROLE_PERMISSION_DEFAULTS)
     // and nothing changes until a Super Admin explicitly edits one.
-    await sql`
-      CREATE TABLE IF NOT EXISTS role_permissions (
-        permission_key TEXT NOT NULL,
-        role           TEXT NOT NULL,
-        level          TEXT NOT NULL DEFAULT 'yes',
-        updated_by     TEXT,
-        updated_at     TIMESTAMPTZ DEFAULT NOW(),
-        PRIMARY KEY (permission_key, role)
-      )
-    `;
-    for (const [key, def] of Object.entries(ROLE_PERMISSION_DEFAULTS)) {
-      for (const [role, level] of Object.entries(def.levels)) {
-        await sql`
-          INSERT INTO role_permissions (permission_key, role, level)
-          VALUES (${key}, ${role}, ${level})
-          ON CONFLICT (permission_key, role) DO NOTHING
-        `;
-      }
-    }
+    // (public.role_permissions is the tracker's register and is created and
+    // seeded by the tracker. This app keeps its own in finance.role_permissions
+    // below and never writes the tracker's.)
 
     // ── Finance's own sign-in list ──────────────────────────────────
     // The tracker's public.users decides who gets into the TRACKER. This app
@@ -1446,6 +1436,72 @@ async function initDb() {
     `;
     await sql`CREATE INDEX IF NOT EXISTS fin_audit_log_entity_idx ON finance.audit_log(entity_type, entity_id)`;
     await sql`CREATE INDEX IF NOT EXISTS fin_audit_log_user_idx   ON finance.audit_log(user_id)`;
+
+    // Procurement joins Finance and Super Admin as a sign-in role. Postgres
+    // auto-named the inline CHECKs from CREATE TABLE above, so rather than
+    // guess those names, drop every CHECK on finance.users and re-add both
+    // under names we own — in one DO block, so the table lock serializes any
+    // two cold starts racing this and each run ends in the same state.
+    await sql`
+      DO $$
+      DECLARE c record;
+      BEGIN
+        FOR c IN SELECT conname FROM pg_constraint
+                  WHERE conrelid = 'finance.users'::regclass AND contype = 'c' LOOP
+          EXECUTE format('ALTER TABLE finance.users DROP CONSTRAINT %I', c.conname);
+        END LOOP;
+        ALTER TABLE finance.users ADD CONSTRAINT fin_users_role_check
+          CHECK (role IN ('super_admin','finance','procurement'));
+        ALTER TABLE finance.users ADD CONSTRAINT fin_users_roles_check
+          CHECK (cardinality(roles) >= 1
+                 AND roles <@ ARRAY['super_admin','admin','finance','procurement']::text[]
+                 AND (NOT ('admin' = ANY(roles)) OR 'super_admin' = ANY(roles)));
+      END $$
+    `;
+
+    // This app's own Access Register. Same shape as the tracker's, but
+    // separate: Finance has the same access in both apps to begin with, then
+    // gets more here (the financial system), and a change in one register
+    // must never move the other.
+    await sql`
+      CREATE TABLE IF NOT EXISTS finance.role_permissions (
+        permission_key TEXT NOT NULL,
+        role           TEXT NOT NULL,
+        level          TEXT NOT NULL DEFAULT 'yes',
+        updated_by     TEXT,
+        updated_at     TIMESTAMPTZ DEFAULT NOW(),
+        PRIMARY KEY (permission_key, role)
+      )
+    `;
+    // One-time: start Finance from whatever the tracker's register says for
+    // Finance today, including any edits a Super Admin made there. Reads the
+    // tracker's table, writes only ours. Marker-guarded so later tracker
+    // edits never flow in on a replay.
+    const finPermsCopied = await sql`SELECT 1 FROM schema_meta WHERE key = 'finance_role_permissions_from_tracker_v1'`;
+    if (!finPermsCopied.length) {
+      await sql`
+        INSERT INTO finance.role_permissions (permission_key, role, level, updated_by, updated_at)
+        SELECT permission_key, role, level, 'copied from tracker', NOW()
+          FROM public.role_permissions
+         WHERE role = 'finance'
+        ON CONFLICT (permission_key, role) DO NOTHING
+      `;
+      await sql`INSERT INTO schema_meta (key, value) VALUES ('finance_role_permissions_from_tracker_v1', NOW()::TEXT) ON CONFLICT (key) DO NOTHING`;
+    }
+    // Then fill any permission the copy didn't cover from the code defaults.
+    // DO NOTHING keeps every saved level, so this only ever adds new keys.
+    // Procurement has no defaults: it starts with no access at all.
+    for (const [key, def] of Object.entries(ROLE_PERMISSION_DEFAULTS)) {
+      for (const role of FINANCE_PERMISSION_ROLES) {
+        const level = def.levels[role];
+        if (!level) continue;
+        await sql`
+          INSERT INTO finance.role_permissions (permission_key, role, level)
+          VALUES (${key}, ${role}, ${level})
+          ON CONFLICT (permission_key, role) DO NOTHING
+        `;
+      }
+    }
     // Seed the owner so the list isn't empty on first deploy (nobody could
     // sign in to add anyone). ON CONFLICT makes it a no-op on every replay.
     if (BOOTSTRAP_SUPER_ADMIN) {
@@ -1789,7 +1845,7 @@ app.post('/api/auth/google', async (req, res) => {
     // bare 'admin', which finance doesn't allow). The owner is seeded by
     // initDb; everyone else must be added from the Users tab. Being on the
     // tracker's user list grants nothing in this app.
-    if (!user || !userHasRole(user, 'finance', 'super_admin')) {
+    if (!user || !userHasRole(user, 'finance', 'procurement', 'super_admin')) {
       return res.status(403).json({ error: 'This account does not have access to Supreme Art Finance. Ask a Super Admin to add you.' });
     }
     if (user.blocked_at) {
@@ -1919,18 +1975,20 @@ const ROLE_PRIORITY = ['super_admin', 'admin', 'production_manager', 'store_mana
 // the payload (by tampering with the request, since the checkbox is hidden
 // from them client-side) has it silently stripped here, server-side.
 function parseRolesInput(body, actingUser) {
-  // Finance admits exactly two kinds of account: Finance and Super Admin.
-  // Tracker roles (admin, PM, store, operator, CEO, client) are dropped.
-  // A Super Admin also carries 'admin' internally because shared code
-  // gates on it; finance.users' CHECK forbids 'admin' without 'super_admin'.
+  // Finance admits three kinds of account: Super Admin, Finance and
+  // Procurement (roles combine). Tracker roles (admin, PM, store, operator,
+  // CEO, client) are dropped. A Super Admin also carries 'admin' internally
+  // because shared code gates on it; finance.users' CHECK forbids 'admin'
+  // without 'super_admin'.
+  const WORK_ROLES = ['finance', 'procurement'];
   let roles = normalizeUserRoles(Array.isArray(body.roles) && body.roles.length ? body.roles : body.role)
-    .filter(r => r === 'finance' || r === 'super_admin');
+    .filter(r => r === 'super_admin' || WORK_ROLES.includes(r));
   if (roles.includes('super_admin') && !userHasRole(actingUser, 'super_admin')) {
     roles = roles.filter(r => r !== 'super_admin');
   }
   if (!roles.length) roles = ['finance'];
-  if (roles.includes('super_admin')) roles = ['super_admin', 'admin', ...roles.filter(r => r === 'finance')];
-  const primary = roles.includes('super_admin') ? 'super_admin' : 'finance';
+  if (roles.includes('super_admin')) roles = ['super_admin', 'admin', ...roles.filter(r => WORK_ROLES.includes(r))];
+  const primary = roles.includes('super_admin') ? 'super_admin' : (roles.includes('finance') ? 'finance' : 'procurement');
   return { roles, primary };
 }
 
@@ -2202,7 +2260,7 @@ app.get('/api/audit', requireAuth, async (req, res) => {
 // hard client-role block above; letting it appear in the editor would
 // invite a mistaken edit into something that actually can't take effect
 // safely, which is worse than just not offering it.
-const EDITABLE_PERMISSION_ROLES = ['admin', 'ceo', 'production_manager', 'store_manager', 'finance', 'operator'];
+const EDITABLE_PERMISSION_ROLES = FINANCE_PERMISSION_ROLES;
 
 // Every signed-in user needs to know their OWN effective permissions
 // (client-side canWriteJobs() etc. read this at boot) — this is not
@@ -2224,7 +2282,7 @@ app.get('/api/role-permissions', requireSuperAdmin, async (req, res) => {
   try {
     await dbReady;
     const sql = getDb();
-    const rows = await sql`SELECT permission_key, role, level FROM role_permissions`;
+    const rows = await sql`SELECT permission_key, role, level FROM finance.role_permissions`;
     const matrix = {};
     for (const key of Object.keys(ROLE_PERMISSION_DEFAULTS)) matrix[key] = {};
     for (const r of rows) {
@@ -2247,7 +2305,7 @@ app.put('/api/role-permissions', requireSuperAdmin, async (req, res) => {
     const validLevels = ['no', 'hidden', 'view', 'yes', ...(def.extra || [])];
     if (!validLevels.includes(level)) return res.status(400).json({ error: `level must be one of: ${validLevels.join(', ')}` });
     await sql`
-      INSERT INTO role_permissions (permission_key, role, level, updated_by, updated_at)
+      INSERT INTO finance.role_permissions (permission_key, role, level, updated_by, updated_at)
       VALUES (${key}, ${role}, ${level}, ${req.user.email}, NOW())
       ON CONFLICT (permission_key, role) DO UPDATE SET level = EXCLUDED.level, updated_by = EXCLUDED.updated_by, updated_at = NOW()
     `;
