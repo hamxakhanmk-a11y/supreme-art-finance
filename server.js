@@ -1786,6 +1786,30 @@ const requireStockOrAdmin = requireInventoryWriter;
 
 app.use(authMiddleware);
 
+// Jobs are view-only in Supreme Art Finance. Every change to a job, a job
+// group or a MIL stock group is refused here, before any route runs —
+// Super Admin included — so no button in this app, hidden or not, can
+// change the tracker's job data. The only writes let through are recording
+// and removing deliveries (delivery recording moved to this app; those
+// routes still check delivery_write / delivery_delete themselves) and the
+// print stamp. Wastage Adjustment lives under /api/wastage-adjustment and
+// is unaffected.
+const FINANCE_JOB_WRITES_ALLOWED = [
+  /^\/api\/jobs\/\d+\/deliveries$/,         // POST   record a delivery
+  /^\/api\/jobs\/\d+\/deliveries\/\d+$/,  // DELETE remove a delivery entry
+  /^\/api\/jobs\/\d+\/deliver-linked$/,     // POST   joint delivery with a linked job
+  /^\/api\/groups\/deliver$/,                 // POST   MIL group delivery
+  /^\/api\/jobs\/\d+\/printed$/,            // POST   print counter (printing is viewing)
+];
+app.use((req, res, next) => {
+  if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') return next();
+  // Case-insensitive: Express routes match case-insensitively by default, so
+  // /API/JOBS/5 reaches the same handler as /api/jobs/5 and must be caught too.
+  if (!/^\/api\/(jobs|groups|stock-groups)(\/|$)/i.test(req.path)) return next();
+  if (FINANCE_JOB_WRITES_ALLOWED.some(re => re.test(req.path))) return next();
+  return res.status(403).json({ error: 'Jobs are view-only in Supreme Art Finance. Make this change in the Job Tracker.' });
+});
+
 // Write an action-level audit row. Called from every mutating handler after
 // the primary write succeeds, so the log only ever shows real changes.
 async function logAudit(sql, req, { action, entityType, entityId, summary, metadata }) {

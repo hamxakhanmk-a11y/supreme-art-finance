@@ -2875,7 +2875,6 @@ td.jc-details-cell > input[type="text"] { padding-right: 20px; }
     </div>
     <div class="jobs-filter-row">
       <select class="filter" id="client-filter" onchange="setClientFilter(this.value)"><option value="">All companies</option></select>
-      <select class="filter" id="machine-filter" onchange="setMachineFilter(this.value)"><option value="">All machines</option></select>
       <select class="filter" id="group-filter" onchange="setGroupFilter(this.value)" title="Filter by Job Group"><option value="">All groups</option></select>
       <button id="shade-card-toggle" class="whole-toggle" onclick="toggleShadeCardFilter()" title="Show only shade-card jobs">
         <span class="whole-toggle-text">&#127912; <span id="shade-card-toggle-label">Shade Cards</span></span>
@@ -2884,7 +2883,6 @@ td.jc-details-cell > input[type="text"] { padding-right: 20px; }
       <input class="filter" type="text" id="challan-filter" placeholder="Challan No." oninput="setChallanFilter(this.value)" style="width:130px;" title="Filter jobs by a delivery's Challan No. substring">
     </div>
     <div class="jobs-filter-row">
-      <select class="filter" id="stage-filter" onchange="setStageFilter(this.value)"><option value="">All stages</option></select>
       <select class="filter" id="date-filter" onchange="setDateRange(this.value)">
         <option value="">All time</option><option value="this-week">This week</option><option value="last-week">Last week</option><option value="past-7">Past 7 days</option><option value="this-month">This month</option><option value="last-month">Last month</option><option value="past-30">Past 30 days</option><option value="this-year">This year</option><option value="last-year">Last year</option><option value="custom">Custom range…</option>
       </select>
@@ -4209,7 +4207,12 @@ function isClient()            { return hasRole('client'); }
 // role_permissions table independently — see canWriteJobs(user) etc. in
 // server.js — so these client checks are convenience/UI-dimming, not the
 // actual security boundary, exactly as before this was made editable.
-function canWriteJobs()      { return isSuperAdmin() || hasPerm('job_write'); }
+// Jobs are view-only in Supreme Art Finance for every role, Super Admin
+// included — jobs are created and edited in the Job Tracker. Recording a
+// delivery is separate (canRecordDelivery below) and stays available. The
+// server enforces the same rule (see the jobs view-only guard in server.js).
+function canWriteJobs()      { return false; }
+function canDeleteJobs()     { return false; }
 // Delivery ledger — admin, PM, or finance by default. Finance is the only
 // role that can write only this narrow slice of the job while being
 // otherwise read-only. Every delivery button / form uses this instead of
@@ -4244,7 +4247,7 @@ function canWrite() { return canWriteJobs() || canWriteInventory(); }
 // Anyone who can write inventory can issue stock. CEO + operator are blocked
 // unless they also hold a write role. Same underlying capability as
 // canWriteInventory() — kept as its own name for readability at call sites.
-function canIssueStock() { return canWriteInventory(); }
+function canIssueStock() { return false; } // job card is view-only here
 // Offcut-based jobs were meant to be hand-managed by the production side
 // (admin + PM) too, not just the store keeper — but both offcut and
 // fresh issuance actually go through the same POST /api/jobs/:id/issue-stock
@@ -4252,7 +4255,7 @@ function canIssueStock() { return canWriteInventory(); }
 // Kept as its own name for readability, but now literally the same check
 // so it can never drift from it the way it used to (PM used to see this
 // button and get a 403 with no warning).
-function canIssueOffcutStock() { return canWriteInventory(); }
+function canIssueOffcutStock() { return false; } // job card is view-only here
 // A job counts as offcut-based when its linked inventory item is an
 // offcut row. Used to swap the Issue Stock button to yellow and hide
 // it from the store keeper on the Pending Stock queue.
@@ -5066,7 +5069,7 @@ function renderTabs() {
   }
   requestAnimationFrame(() => syncFlowingTabIndicator(tabsWrap));
   const sf = document.getElementById('stage-filter');
-  sf.innerHTML = `<option value="">All stages</option>` + STAGES.map(s=>`<option value="${s}" ${filterStage===s?'selected':''}>${s}</option>`).join('');
+  if (sf) sf.innerHTML = `<option value="">All stages</option>` + STAGES.map(s=>`<option value="${s}" ${filterStage===s?'selected':''}>${s}</option>`).join('');
   const cf = document.getElementById('client-filter');
   const clients = [...new Set(jobs.map(j=>j.client).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
   cf.innerHTML = `<option value="">All companies</option>` + clients.map(c=>`<option value="${esc(c)}" ${filterClient===c?'selected':''}>${esc(c)}</option>`).join('');
@@ -5381,15 +5384,15 @@ function renderJobRowCompact(j, opts) {
             ${isNew && canWriteJobs() ? `<button class="btn btn-sm" style="background:#166534;border-color:#166534;color:#fff;font-weight:700;" onclick="processJobToCtp(${j.id})" title="Move this job into the CTP queue. The CTP operator will pick it up and make plates.">&rarr; Process to CTP</button>` : ''}
             ${isCtp && canWriteJobs() ? `<button class="btn btn-sm" style="background:#1e40af;border-color:#1e40af;color:#fff;font-weight:700;" onclick="processJobFromCtp(${j.id})" title="Plates are done. Move this job to Printing / Pending Stock so the store keeper can issue paper.">&rarr; Process to Printing</button>` : ''}
             ${partialDelv && canWriteJobs() ? `<button class="btn btn-sm" style="background:#166534;border-color:#166534;color:#fff;font-weight:700;" onclick="finalizeAsDelivered(${j.id})" title="Close this job as Delivered without shipping the remaining cartons.">&rarr; Finalize as Delivered</button>` : ''}
-            <button class="btn btn-sm ${(isNew || isCtp) ? '' : 'btn-primary'}" onclick="openEdit(${j.id})" title="Open the job card to view or edit its details. Stage advances by clicking the stage pills above.">Edit / View</button>
+            <button class="btn btn-sm ${(isNew || isCtp) ? '' : 'btn-primary'}" onclick="openEdit(${j.id})" title="Open the job card to view its details and record deliveries.">View</button>
             <button class="btn btn-sm" onclick="openHistory(${j.id})">History</button>
-            ${!_finalizedJobIds.has(j.id) ? `<button class="btn btn-sm ceo-hide" onclick="openDuplicateJob(${j.id})" title="Make a new job card pre-filled with this job's data — useful for repeat orders.">&#128203; Duplicate</button>` : ''}
+            ${(canWriteJobs() && !_finalizedJobIds.has(j.id)) ? `<button class="btn btn-sm ceo-hide" onclick="openDuplicateJob(${j.id})" title="Make a new job card pre-filled with this job's data — useful for repeat orders.">&#128203; Duplicate</button>` : ''}
             ${(!_finalizedJobIds.has(j.id) && canWriteJobs()) ? (j.linked_job_id
               ? `<button class="btn btn-sm ceo-hide" onclick="unlinkJob(${j.id})" title="Remove the link with Job E-${j.linked_job_id}">&#128279; Unlink</button>`
               : `<button class="btn btn-sm ceo-hide" onclick="openLinkJobPicker(${j.id})" title="Link this job with another job card printed together on the same run">&#128279; Link Job</button>`) : ''}
             ${canPrintJobCard() ? `<button class="btn btn-sm ${(j.print_count || 0) > 0 ? 'is-printed' : ''}" onclick="printJobCard(${j.id})" title="${(j.print_count || 0) > 0 ? `Printed ${j.print_count} time${j.print_count===1?'':'s'}${j.last_printed_at?' · last '+fmtDMYT(j.last_printed_at):''}` : 'Print job card'}">Print</button>` : ''}
-            ${!done?`<button class="btn btn-sm btn-danger ceo-hide" onclick="toggleBlock(${j.id})">${blocked?'Unblock':'Block'}</button>`:''}
-            ${hasPerm('job_delete')?`<button class="btn btn-sm btn-danger" onclick="deleteJob(${j.id})" title="Admin only">Delete</button>`:''}
+            ${(!done && canWriteJobs())?`<button class="btn btn-sm btn-danger ceo-hide" onclick="toggleBlock(${j.id})">${blocked?'Unblock':'Block'}</button>`:''}
+            ${canDeleteJobs()?`<button class="btn btn-sm btn-danger" onclick="deleteJob(${j.id})" title="Admin only">Delete</button>`:''}
             ${(done && canWastageAdjust() && !_finalizedJobIds.has(j.id)) ? `<button class="btn btn-sm" style="background:rgba(120,120,120,0.08);border-color:rgba(120,120,120,0.25);color:var(--text2);font-weight:700;${jobHasManualMatch(j)?'':'opacity:0.35;'}" onclick="event.stopPropagation();openAdjustModal(${j.id})" title="${jobHasManualMatch(j)?'Matching manual consumption available — click to adjust':'No matching manual consumption for this paper type/size'}">&#9881; Adjust</button>` : ''}
             ${(_finalizedJobIds.has(j.id) && canWastageAdjust() && view === 'finalized') ? `<button class="btn btn-sm" style="background:#dc2626;border-color:#b91c1c;color:#fff;font-weight:700;" onclick="event.stopPropagation();removeAdjustment(${j.id})" title="Remove adjustment and move back to Delivered">&#8634; Un-adjust</button>` : ''}
           </div>
@@ -5775,21 +5778,21 @@ function renderJobCard(j, opts) {
     <details class="job-more">
       <summary class="btn btn-sm" title="More actions">⋯</summary>
       <div class="job-more-menu">
-        <button onclick="closeJobMore(this); openEdit(${j.id})">Edit / View</button>
+        <button onclick="closeJobMore(this); openEdit(${j.id})">View</button>
         <button onclick="closeJobMore(this); openHistory(${j.id})">History</button>
-        ${!_finalizedJobIds.has(j.id) ? `<button class="ceo-hide" onclick="closeJobMore(this); openDuplicateJob(${j.id})">Duplicate</button>` : ''}
+        ${(canWriteJobs() && !_finalizedJobIds.has(j.id)) ? `<button class="ceo-hide" onclick="closeJobMore(this); openDuplicateJob(${j.id})">Duplicate</button>` : ''}
         ${(!_finalizedJobIds.has(j.id) && canWriteJobs()) ? (j.linked_job_id
           ? `<button class="ceo-hide" onclick="closeJobMore(this); unlinkJob(${j.id})">Unlink (E-${j.linked_job_id})</button>`
           : `<button class="ceo-hide" onclick="closeJobMore(this); openLinkJobPicker(${j.id})">Link Job</button>`) : ''}
         ${canWriteJobs() && !clientPreview && !j.stock_group_name ? `<button class="ceo-hide" onclick="closeJobMore(this); openAddToGroupModal(${j.id})">&#128230; Add to Job Group</button>` : ''}
         ${canWriteJobs() && !clientPreview && j.stock_group_name ? `<button class="ceo-hide" onclick="closeJobMore(this); removeJobFromGroup(${j.id},${jsStr(j.stock_group_name)})">&#128230; Remove from Job Group</button>` : ''}
         ${canPrintJobCard() ? `<button onclick="closeJobMore(this); printJobCard(${j.id})" class="${(j.print_count || 0) > 0 ? 'is-printed' : ''}" title="${(j.print_count || 0) > 0 ? `Printed ${j.print_count} time${j.print_count===1?'':'s'}${j.last_printed_at?' · last '+fmtDMYT(j.last_printed_at):''}` : 'Print job card'}">Print</button>` : ''}
-        ${!done?`<button class="ceo-hide" onclick="closeJobMore(this); toggleBlock(${j.id})">${blocked?'Unblock':'Block'}</button>`:''}
-        ${isAdmin()?`<button class="danger" onclick="closeJobMore(this); deleteJob(${j.id})">Delete</button>`:''}
+        ${(!done && canWriteJobs())?`<button class="ceo-hide" onclick="closeJobMore(this); toggleBlock(${j.id})">${blocked?'Unblock':'Block'}</button>`:''}
+        ${canDeleteJobs()?`<button class="danger" onclick="closeJobMore(this); deleteJob(${j.id})">Delete</button>`:''}
       </div>
     </details>`;
   // Edit / View is the most-used action when not pending — surface it directly.
-  const updateBtn = (!clientPreview && !pending) ? `<button class="btn btn-sm btn-primary" onclick="openEdit(${j.id})" title="Open the job card to view or edit its details. Stage advances by clicking the dots above.">Edit / View</button>` : '';
+  const updateBtn = (!clientPreview && !pending) ? `<button class="btn btn-sm btn-primary" onclick="openEdit(${j.id})" title="Open the job card to view its details and record deliveries.">View</button>` : '';
 
   // Batch-print select box — same logic as the compact view. Renders on
   // the New Jobs tab and the CTP tab, and only for users who can print job cards.
@@ -19369,7 +19372,7 @@ function jobForm(j={}, opts) {
           // Request Extra Packets: restricted to admin / super admin only
           // (tighter than the general job_write permission, which also
           // covers production_manager by default) — per explicit request.
-          const topupBtn = (j.id && j.issuance_status === 'issued' && (isAdmin() || isSuperAdmin()))
+          const topupBtn = (j.id && j.issuance_status === 'issued' && canWriteJobs() && (isAdmin() || isSuperAdmin()))
             ? `<button type="button" class="btn btn-sm ceo-hide" onclick="openPacketsTopup(${j.id})" title="Request extra packets for this running job. Sent to store keeper for approval." style="padding:2px 8px;font-weight:700;">+</button>`
             : '';
           return `
@@ -20041,10 +20044,16 @@ function groupActionsHtml(groupName, reprId, latestId, count, hasReady, containe
   // group edit page, duplicate from group into new sub job). Fall back
   // to the legacy per-member Edit / duplicate when the group hasn't
   // been migrated to an entity yet (groupId undefined).
-  const editBtn = groupId
+  // Jobs are view-only in this app (canWriteJobs is always false): no Edit
+  // Group, no Duplicate — just open the representative job card to view it.
+  const editBtn = !canWriteJobs()
+    ? `<button class="btn btn-sm btn-primary" onclick="openEdit(${reprId})" title="Open the current representative job to view it and record deliveries">View</button>`
+    : groupId
     ? `<button class="btn btn-sm btn-primary ceo-hide" onclick="openGroupEdit(${groupId})" title="Edit the group template (client / product / specs / PO qty)">Edit Group</button>`
     : `<button class="btn btn-sm btn-primary" onclick="openEdit(${reprId})" title="Open the current representative job">Edit / View</button>`;
-  const dupBtn = groupId
+  const dupBtn = !canWriteJobs()
+    ? ''
+    : groupId
     ? `<button class="btn btn-sm ceo-hide" onclick="duplicateGroupIntoJob(${groupId})" title="Open a New Job Card pre-filled from this group — nothing is saved until Create &amp; Print">&#128203; Duplicate</button>`
     : `<button class="btn btn-sm ceo-hide" onclick="createNextJobInGroup(${gName},${latestId})" title="Duplicate the latest job in this group — new job is auto-added to the same group">&#128203; Duplicate</button>`;
   return `<div class="${containerClass}">
@@ -22104,6 +22113,37 @@ function lockJobCardExceptMachineAndParticulars() {
   _mgrLockObserver.observe(root, { childList: true, subtree: true });
 }
 
+// Finance's view-only job card: same approach as the Station manager lock
+// above, but the only live region is Deliveries (.jc-deliveries) — its
+// inputs and Record / Remove Delivery buttons keep working. Modal-actions
+// (Close) stay live. A MutationObserver locks anything the card adds later
+// (e.g. a re-rendered particulars table).
+let _finLockObserver = null;
+function lockJobCardExceptDeliveries() {
+  const root = document.querySelector('.job-edit-modal');
+  if (!root) return;
+  const lockOne = el => {
+    if (el.closest('.jc-deliveries')) return;
+    if (el.closest('.modal-actions')) return;
+    if (el.tagName === 'BUTTON' || el.tagName === 'SELECT') { el.disabled = true; return; }
+    if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
+      if (el.type === 'checkbox' || el.type === 'radio') el.disabled = true;
+      else el.readOnly = true;
+    }
+  };
+  const lockSubtree = node => {
+    if (node.nodeType !== 1) return;
+    if (['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON'].includes(node.tagName)) lockOne(node);
+    node.querySelectorAll && node.querySelectorAll('input, textarea, select, button').forEach(lockOne);
+  };
+  lockSubtree(root);
+  if (_finLockObserver) _finLockObserver.disconnect();
+  _finLockObserver = new MutationObserver(mutations => {
+    for (const m of mutations) m.addedNodes.forEach(lockSubtree);
+  });
+  _finLockObserver.observe(root, { childList: true, subtree: true });
+}
+
 function openEdit(id, opts) {
   opts = opts || {};
   // Manager station flow (see stationManagerOpenJobCard): same modal, but
@@ -22157,7 +22197,7 @@ function openEdit(id, opts) {
     <div class="modal-actions">
       <button class="btn" onclick="closeModal()">${managerMode ? 'Close' : 'Cancel'}</button>
       ${processBtn}
-      ${managerMode ? `<button class="btn btn-primary" onclick="stationManagerSaveJobCard(${j.id})">Save Machine &amp; Particulars</button>` : (adjustMode ? '' : '<button class="btn btn-primary ceo-hide" onclick="saveEdit(' + j.id + ')">Save Changes</button>')}
+      ${managerMode ? `<button class="btn btn-primary" onclick="stationManagerSaveJobCard(${j.id})">Save Machine &amp; Particulars</button>` : '' /* no Save Changes: the job card is view-only in this app */}
     </div>
   </div>`);
   updateStockHint();
@@ -22191,6 +22231,9 @@ function openEdit(id, opts) {
   // (Save Changes is gone above), but locking makes it visually obvious
   // which parts of the card are just for reference right now.
   if (adjustMode) lockJobCardExceptAdjustFields();
+  // Everywhere else the job card is view-only in this app — every field and
+  // in-form button is locked except the Deliveries section.
+  if (!managerMode && !adjustMode) lockJobCardExceptDeliveries();
 }
 
 async function saveEdit(id) {
@@ -22321,7 +22364,7 @@ async function moveToReadyAndEdit(id) {
 async function moveJobToCtp(id) {
   const j = jobs.find(x => x.id === id);
   if (!j) return;
-  if (!canWriteJobs()) { notify('Only Production Manager / Admin can move jobs back to CTP.'); return; }
+  if (!canWriteJobs()) { notify('Jobs are view-only in Supreme Art Finance — make this change in the Job Tracker.'); return; }
   if (j.issuance_status === 'ctp' || j.issuance_status === 'new') return;
   const ok = await confirmDialog({
     title: `Send Job E-${id} back to CTP?`,
@@ -22342,7 +22385,7 @@ async function moveJobToCtp(id) {
 async function moveJobToPendingStock(id) {
   const j = jobs.find(x => x.id === id);
   if (!j) return;
-  if (!canWriteJobs()) { notify('Only Production Manager / Admin can move jobs to Pending Stock.'); return; }
+  if (!canWriteJobs()) { notify('Jobs are view-only in Supreme Art Finance — make this change in the Job Tracker.'); return; }
   if (j.issuance_status === 'new' || j.issuance_status === 'ctp') { notify('Job is at CTP — advance it to Printing first.'); return; }
   if (j.issuance_status === 'pending' && (j.stage_index || 0) === 1) return;
   const ok = await confirmDialog({
@@ -22368,13 +22411,13 @@ async function moveToStage(id, target) {
   // only the server (requireJobsWriter) actually rejects a non-writer's
   // move. Guard here too so a non-writer gets a clear message instead of
   // an unexplained failed request.
-  if (!canWriteJobs()) { notify('Only Production Manager / Admin can move a job between stages.'); return; }
+  if (!canWriteJobs()) { notify('Jobs are view-only in Supreme Art Finance — make this change in the Job Tracker.'); return; }
   // Special-case: from Pending Stock, allow moving BACK to CTP (undo an
   // accidental Process to Printing). Runs its own endpoint that flips
   // issuance_status back to 'ctp' AND clears the stale Printing stage
   // entry, so the job pops back into the CTP tab cleanly.
   if (target === 0 && j.issuance_status === 'pending' && (j.stage_index || 0) <= 1) {
-    if (!canWriteJobs()) { notify('Only Production Manager / Admin can move jobs back to CTP.'); return; }
+    if (!canWriteJobs()) { notify('Jobs are view-only in Supreme Art Finance — make this change in the Job Tracker.'); return; }
     const ok = await confirmDialog({
       title: `Move Job E-${id} back to CTP?`,
       message: `"${j.name}" will leave Pending Stock and return to the CTP queue for more plate work.`,
@@ -22489,7 +22532,7 @@ async function openHistory(id) {
 // ledger keeps its rows (FK is ON DELETE SET NULL on inventory_transactions.job_id),
 // so historical consumption stays traceable even after the job is gone.
 async function deleteJob(id) {
-  if (!hasPerm('job_delete')) return;
+  if (!canDeleteJobs()) return;
   const j = jobs.find(x => x.id === id);
   if (!j) return;
   const ok = await confirmDialog({
@@ -22522,7 +22565,7 @@ async function deleteJob(id) {
 // Same green "Process" button style everywhere; confirmation includes
 // the remaining qty so the PM knows exactly what they're waiving.
 async function finalizeAsDelivered(id) {
-  if (!canWriteJobs()) { notify('Only Production Manager / Admin can finalize deliveries.'); return; }
+  if (!canWriteJobs()) { notify('Jobs are view-only in Supreme Art Finance — make this change in the Job Tracker.'); return; }
   const j = jobs.find(x => x.id === id);
   if (!j) return;
   if (!isPartialDelivery(j)) { notify('This job is not a partial delivery.'); return; }
@@ -22565,7 +22608,7 @@ async function finalizeAsDelivered(id) {
 }
 
 async function processJobToCtp(id) {
-  if (!canWriteJobs()) { notify('Only Production Manager / Admin can process jobs to CTP.'); return; }
+  if (!canWriteJobs()) { notify('Jobs are view-only in Supreme Art Finance — make this change in the Job Tracker.'); return; }
   const j = jobs.find(x => x.id === id);
   if (!j || !isNewJob(j)) return;
   const ok = await confirmDialog({
@@ -22593,7 +22636,7 @@ async function processJobToCtp(id) {
 // button on the CTP tab card. Advances the job past plate-making so the
 // store keeper can issue paper and the Printing operator can start.
 async function processJobFromCtp(id) {
-  if (!canWriteJobs()) { notify('Only Production Manager / Admin can process jobs out of CTP.'); return; }
+  if (!canWriteJobs()) { notify('Jobs are view-only in Supreme Art Finance — make this change in the Job Tracker.'); return; }
   const j = jobs.find(x => x.id === id);
   if (!j || !isCtpQueue(j)) return;
   const ok = await confirmDialog({
@@ -23051,7 +23094,7 @@ async function toggleBlock(id) {
   // every role — only the server (requireJobsWriter, same /stage route)
   // rejects a non-writer. Guard here so they don't get prompted for a
   // reason only to have it fail server-side.
-  if (!canWriteJobs()) { notify('Only Production Manager / Admin can block or unblock a job.'); return; }
+  if (!canWriteJobs()) { notify('Jobs are view-only in Supreme Art Finance — make this change in the Job Tracker.'); return; }
   const si = j.stage_index || 0;
   const currentlyBlocked = isBlocked(j);
   const action = currentlyBlocked ? 'Unblock' : 'Block';
