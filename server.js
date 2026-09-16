@@ -134,6 +134,9 @@ const ROLES = [
   { id: 'break',     label: 'Sorting',          stage_index: 4 },
   { id: 'paste',     label: 'Pasting',          stage_index: 5 },
   { id: 'storage',   label: 'Ready to Deliver',  stage_index: 6 },
+  // Not a production stage — a Paper Cutting PIN gets its own Station screen
+  // listing pending offcut issuance requests instead of a stage queue.
+  { id: 'papercut',  label: 'Paper Cutting',     stage_index: null },
 ];
 const ROLE_FINISHES = {
   coatings:  ['UV','Spot UV','Varnish','Lacquer','Water Base','Lamination','Dripup','Color Seal'],
