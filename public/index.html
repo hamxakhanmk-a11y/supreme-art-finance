@@ -3574,7 +3574,9 @@ async function loadStockGroups() {
   catch (e) { console.error('loadStockGroups failed:', e.message); stockGroups = []; }
 }
 let mode = 'jobs';           // 'jobs' or 'inventory' — drives top-level view
-let view = 'active';
+// Finance works the delivery end of a job, so it lands on Ready to Deliver
+// (In Progress, the tracker's default, isn't a tab here).
+let view = 'storage';
 // Jobs view layout: 'cards' (animated grid, default) or 'compact' (dense list).
 // Persisted so each user keeps their preferred density across sessions.
 let jobsViewMode = localStorage.getItem('sa_jobs_view') || 'cards';
@@ -5035,7 +5037,9 @@ function renderStats() {
 }
 
 function renderTabs() {
-  const views = [['all','All'],['new','New Jobs'],['ctp','CTP'],['pending','Pending Stock'],['active','In Progress'],['storage','Ready to Deliver'],['partial','Partially Delivered'],['blocked','Blocked'],['done','Delivered']];
+  // Finance only works the delivery end: New Jobs, CTP, Pending Stock,
+  // In Progress and Blocked are tracker tabs.
+  const views = [['all','All'],['storage','Ready to Deliver'],['partial','Partially Delivered'],['done','Delivered']];
   // Finalized (wastage adjustment) is a Super Admin-only feature end to
   // end — the tab itself stays hidden from every other role, not just the
   // data, and regular Admins are deliberately excluded too.
@@ -6495,6 +6499,8 @@ function stageMachineSVG(stageIndex, { pending, clientPreview, isNew, blocked, e
 
 function render() { renderStats(); renderTabs(); renderJobs(); }
 function setView(v) {
+  // Only this app's tabs (see renderTabs); anything else lands on Ready to Deliver.
+  if (!['all', 'storage', 'partial', 'done', 'finalized'].includes(v)) v = 'storage';
   // Batch-print selection is a New Jobs / CTP feature — drop any ticks
   // when the user leaves both tabs so an accidental Print Selected can't
   // send stale ids that are no longer on screen.
