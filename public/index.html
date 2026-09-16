@@ -2835,7 +2835,6 @@ td.jc-details-cell > input[type="text"] { padding-right: 20px; }
   </div>
   <div class="mode-switch" id="mode-switch">
     <button class="mode-btn active" data-mode="jobs" id="mode-jobs-btn" onclick="setMode('jobs')">Jobs</button>
-    <button class="mode-btn" data-mode="inventory" id="mode-inventory-btn" onclick="setMode('inventory')">Inventory</button>
     <button class="mode-btn" data-mode="reports" id="mode-reports-btn" onclick="setMode('reports')">Reports</button>
     <button class="mode-btn" data-mode="users" onclick="setMode('users')" id="mode-users-btn">Users</button>
   </div>
@@ -4492,7 +4491,6 @@ function renderUserChip() {
   // (CEO is read-only via the .role-ceo body class below).
   const op = isOperator(), sm = isStoreManager(), fin = isFinance();
   lockTab('mode-jobs-btn',      true);
-  lockTab('mode-inventory-btn', !op);
   lockTab('mode-reports-btn',   !op);
   // Users tab — open to whoever can see the Authorized Users list
   // (user_view) or manage Floor Operators (operator_admin — other
@@ -4751,11 +4749,12 @@ function setMode(m) {
   // a server-side reject on station-update for the ceo role). Finance
   // may enter to see the role-block-msg placeholder.
   if (m === 'station' && !canRunStation() && !isFinance()) m = 'jobs';
-  // Stickers, Forms, Station and Client View are tracker-only — their nav
-  // buttons are gone from this app. Checked last, after every role rule
-  // above (the operator rule can rewrite m to 'station'), so nothing
-  // reaches them.
-  if (m === 'stickers' || m === 'forms' || m === 'station' || m === 'client-view') m = 'jobs';
+  // Stickers, Forms, Station, Client View and Inventory are tracker-only —
+  // their nav buttons are gone from this app. Checked last, after every role
+  // rule above (the operator and store-manager rules rewrite m to
+  // 'station' / 'inventory'), so nothing reaches them. Inventory DATA still
+  // loads at boot: the Jobs tab reads it for paper and stock details.
+  if (['stickers', 'forms', 'station', 'client-view', 'inventory'].includes(m)) m = 'jobs';
   mode = m;
   document.querySelectorAll('.mode-btn').forEach(b => b.classList.toggle('active', b.dataset.mode === m));
   requestAnimationFrame(() => syncFlowingTabIndicator('mode-switch'));
@@ -26174,7 +26173,6 @@ async function setUsersSubTab(tab) {
 let _accRegTab = 'jobs';
 const ACC_REG_TABS = [
   ['jobs', 'Jobs'],
-  ['inventory', 'Inventory'],
   ['reports', 'Reports'],
   ['users', 'Users'],
 ];
