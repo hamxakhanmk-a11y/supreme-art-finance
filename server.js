@@ -12,6 +12,12 @@ app.use(express.json({ limit: '6mb' }));
 app.use(cookieParser());
 
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
+// The fallback string is in the source, so anyone who reads this file could
+// sign their own session cookie with it and claim any role. Only tolerate it
+// locally; on any Vercel deploy a missing JWT_SECRET is a hard boot failure.
+if (!process.env.JWT_SECRET && process.env.VERCEL_ENV) {
+  throw new Error('JWT_SECRET env var is not set — refusing to start with the dev fallback secret.');
+}
 const JWT_SECRET       = process.env.JWT_SECRET || 'dev-only-change-me';
 const BOOTSTRAP_ADMIN  = (process.env.BOOTSTRAP_ADMIN_EMAIL || '').toLowerCase();
 // Super Admin: a role above Admin, exclusively gated to a small set of
@@ -21,7 +27,7 @@ const BOOTSTRAP_ADMIN  = (process.env.BOOTSTRAP_ADMIN_EMAIL || '').toLowerCase()
 // it's idempotent and doesn't require a one-off DB script. Defaults to the
 // owner's account; override via env var if the login email ever changes.
 const BOOTSTRAP_SUPER_ADMIN = (process.env.BOOTSTRAP_SUPER_ADMIN_EMAIL || 'hamxakhan.mk@gmail.com').toLowerCase();
-const SESSION_COOKIE   = 'sa_session';
+const SESSION_COOKIE   = 'sa_fin_session';
 const SESSION_MAX_AGE  = 30 * 24 * 60 * 60 * 1000; // 30 days
 const googleClient     = new OAuth2Client(GOOGLE_CLIENT_ID);
 
@@ -256,7 +262,9 @@ function getDb() {
 // grew from 7 to 24 groups — a DB already stamped with an earlier,
 // smaller version would otherwise hit the fast-path and never seed the
 // new groups' rows at all.
-const SCHEMA_VERSION = 'v2026-09-13-role-permissions-24groups';
+// Bumped for the finance schema: finance.users / finance.sessions /
+// finance.audit_log — this app's own sign-in list, separate from the tracker's.
+const SCHEMA_VERSION = 'v2026-09-16-finance-users';
 
 // This app shares its Neon database with the Job Tracker app (it started as
 // a copy of it). Both run initDb() at boot, so they must NOT share the one
@@ -1381,6 +1389,73 @@ async function initDb() {
       }
     }
 
+    // ── Finance's own sign-in list ──────────────────────────────────
+    // The tracker's public.users decides who gets into the TRACKER. This app
+    // must not inherit that list: only people explicitly added here can sign
+    // in to finance, and only as Finance or Super Admin — a tracker Admin
+    // gets nothing here unless added. Sessions and the audit log follow the
+    // user ids, so they move into the schema too (their FKs point at
+    // finance.users, and finance ids mean nothing in public.users).
+    // Everything below is additive: new schema, new tables, no tracker table
+    // is read or written.
+    await sql`CREATE SCHEMA IF NOT EXISTS finance`;
+    await sql`
+      CREATE TABLE IF NOT EXISTS finance.users (
+        id             SERIAL PRIMARY KEY,
+        email          TEXT NOT NULL UNIQUE,
+        name           TEXT,
+        picture        TEXT,
+        role           TEXT NOT NULL DEFAULT 'finance' CHECK (role IN ('super_admin','finance')),
+        -- 'admin' may only ride along with 'super_admin' (the shared role code
+        -- expects super admins to carry both); nobody is ever a bare admin here.
+        roles          TEXT[] NOT NULL DEFAULT ARRAY['finance']::text[]
+                       CHECK (cardinality(roles) >= 1
+                              AND roles <@ ARRAY['super_admin','admin','finance']::text[]
+                              AND (NOT ('admin' = ANY(roles)) OR 'super_admin' = ANY(roles))),
+        client_company TEXT,
+        invited_by     INTEGER REFERENCES finance.users(id) ON DELETE SET NULL,
+        created_at     TIMESTAMPTZ DEFAULT NOW(),
+        last_login_at  TIMESTAMPTZ,
+        blocked_at     TIMESTAMPTZ
+      )
+    `;
+    await sql`
+      CREATE TABLE IF NOT EXISTS finance.sessions (
+        id           SERIAL PRIMARY KEY,
+        user_id      INTEGER NOT NULL REFERENCES finance.users(id) ON DELETE CASCADE,
+        user_agent   TEXT,
+        ip           TEXT,
+        created_at   TIMESTAMPTZ DEFAULT NOW(),
+        last_seen_at TIMESTAMPTZ DEFAULT NOW(),
+        revoked_at   TIMESTAMPTZ
+      )
+    `;
+    await sql`CREATE INDEX IF NOT EXISTS fin_sessions_user_idx ON finance.sessions(user_id)`;
+    await sql`
+      CREATE TABLE IF NOT EXISTS finance.audit_log (
+        id          SERIAL PRIMARY KEY,
+        user_id     INTEGER REFERENCES finance.users(id) ON DELETE SET NULL,
+        user_email  TEXT,
+        action      TEXT NOT NULL,
+        entity_type TEXT,
+        entity_id   INTEGER,
+        summary     TEXT NOT NULL,
+        metadata    JSONB DEFAULT '{}',
+        created_at  TIMESTAMPTZ DEFAULT NOW()
+      )
+    `;
+    await sql`CREATE INDEX IF NOT EXISTS fin_audit_log_entity_idx ON finance.audit_log(entity_type, entity_id)`;
+    await sql`CREATE INDEX IF NOT EXISTS fin_audit_log_user_idx   ON finance.audit_log(user_id)`;
+    // Seed the owner so the list isn't empty on first deploy (nobody could
+    // sign in to add anyone). ON CONFLICT makes it a no-op on every replay.
+    if (BOOTSTRAP_SUPER_ADMIN) {
+      await sql`
+        INSERT INTO finance.users (email, role, roles)
+        VALUES (${BOOTSTRAP_SUPER_ADMIN}, 'super_admin', ARRAY['super_admin','admin']::text[])
+        ON CONFLICT (email) DO NOTHING
+      `;
+    }
+
     // Stamp the schema version so future cold starts hit the fast-path
     // short-circuit at the top of initDb instead of replaying every ALTER.
     await sql`
@@ -1440,8 +1515,8 @@ async function authMiddleware(req, res, next) {
           const sql = getDb();
           const rows = await sql`
             SELECT s.revoked_at, u.blocked_at
-            FROM sessions s JOIN users u ON u.id = s.user_id
-            WHERE s.id = ${candidate.sid}
+            FROM finance.sessions s JOIN finance.users u ON u.id = s.user_id
+            WHERE s.id = ${candidate.sid} AND s.user_id = ${candidate.id}
           `;
           const row = rows[0];
           if (!row || row.revoked_at || row.blocked_at) {
@@ -1453,7 +1528,7 @@ async function authMiddleware(req, res, next) {
             // Heartbeat so the Users tab's "last seen" stays fresh. Fire
             // and forget, throttled, so it never adds latency to the
             // request or writes on literally every click.
-            sql`UPDATE sessions SET last_seen_at = NOW() WHERE id = ${candidate.sid} AND last_seen_at < NOW() - INTERVAL '2 minutes'`.catch(() => {});
+            sql`UPDATE finance.sessions SET last_seen_at = NOW() WHERE id = ${candidate.sid} AND last_seen_at < NOW() - INTERVAL '2 minutes'`.catch(() => {});
           }
         } catch (e) {
           // DB hiccup — fail OPEN (trust the JWT) rather than locking
@@ -1658,7 +1733,7 @@ async function logAudit(sql, req, { action, entityType, entityId, summary, metad
   if (!req.user) return;
   try {
     await sql`
-      INSERT INTO audit_log (user_id, user_email, action, entity_type, entity_id, summary, metadata)
+      INSERT INTO finance.audit_log (user_id, user_email, action, entity_type, entity_id, summary, metadata)
       VALUES (${req.user.id}, ${req.user.email}, ${action}, ${entityType || null}, ${entityId || null}, ${summary}, ${JSON.stringify(metadata || {})})
     `;
   } catch (e) {
@@ -1707,26 +1782,15 @@ app.post('/api/auth/google', async (req, res) => {
 
     const sql = getDb();
     // Look up by email — case-insensitive.
-    let userRows = await sql`SELECT * FROM users WHERE lower(email) = ${email}`;
+    let userRows = await sql`SELECT * FROM finance.users WHERE lower(email) = ${email}`;
     let user = userRows[0];
 
-    // Bootstrap: if no record exists and this email matches the env-configured
-    // BOOTSTRAP_ADMIN_EMAIL, auto-create as admin. This is the only way to get
-    // the first admin into a fresh database.
-    if (!user && BOOTSTRAP_ADMIN && email === BOOTSTRAP_ADMIN) {
-      const inserted = await sql`
-        INSERT INTO users (email, name, picture, role)
-        VALUES (${email}, ${name}, ${picture}, 'admin')
-        RETURNING *
-      `;
-      user = inserted[0];
-      // Audit the bootstrap as the new admin acting on themselves.
-      await logAudit(sql, { user: { id: user.id, email: user.email } },
-        { action: 'user.bootstrap', entityType: 'user', entityId: user.id, summary: `Bootstrap admin ${email} auto-created` });
-    }
-
-    if (!user) {
-      return res.status(403).json({ error: 'Not authorized — contact your administrator to be invited.' });
+    // No auto-create here (the tracker's BOOTSTRAP_ADMIN path would mint a
+    // bare 'admin', which finance doesn't allow). The owner is seeded by
+    // initDb; everyone else must be added from the Users tab. Being on the
+    // tracker's user list grants nothing in this app.
+    if (!user || !userHasRole(user, 'finance', 'super_admin')) {
+      return res.status(403).json({ error: 'This account does not have access to Supreme Art Finance. Ask a Super Admin to add you.' });
     }
     if (user.blocked_at) {
       return res.status(403).json({ error: 'Your account has been blocked by an administrator.' });
@@ -1734,7 +1798,7 @@ app.post('/api/auth/google', async (req, res) => {
 
     // Refresh profile + login timestamp on every sign-in.
     const updated = await sql`
-      UPDATE users SET name = ${name}, picture = ${picture}, last_login_at = NOW()
+      UPDATE finance.users SET name = ${name}, picture = ${picture}, last_login_at = NOW()
       WHERE id = ${user.id} RETURNING *
     `;
     user = updated[0];
@@ -1744,7 +1808,7 @@ app.post('/api/auth/google', async (req, res) => {
     const ua = req.headers['user-agent'] || '';
     const ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket?.remoteAddress || '';
     const sessionRows = await sql`
-      INSERT INTO sessions (user_id, user_agent, ip) VALUES (${user.id}, ${ua}, ${ip}) RETURNING id
+      INSERT INTO finance.sessions (user_id, user_agent, ip) VALUES (${user.id}, ${ua}, ${ip}) RETURNING id
     `;
     const sid = sessionRows[0].id;
 
@@ -1782,7 +1846,7 @@ app.post('/api/auth/logout', async (req, res) => {
     try {
       await dbReady;
       const sql = getDb();
-      await sql`UPDATE sessions SET revoked_at = NOW() WHERE id = ${req.user.sid} AND revoked_at IS NULL`;
+      await sql`UPDATE finance.sessions SET revoked_at = NOW() WHERE id = ${req.user.sid} AND revoked_at IS NULL`;
     } catch (e) {
       console.error('logout session revoke failed:', e.message);
     }
@@ -1801,7 +1865,7 @@ app.get('/api/auth/me', async (req, res) => {
     if (req.user.id) {           // skip DEV bypass (id 0) — no DB row to check
       await dbReady;
       const sql = getDb();
-      const rows = await sql`SELECT * FROM users WHERE id = ${req.user.id}`;
+      const rows = await sql`SELECT * FROM finance.users WHERE id = ${req.user.id}`;
       const dbUser = rows[0];
       if (!dbUser) {
         // Account was removed — kill the session instead of serving a ghost.
@@ -1855,18 +1919,18 @@ const ROLE_PRIORITY = ['super_admin', 'admin', 'production_manager', 'store_mana
 // the payload (by tampering with the request, since the checkbox is hidden
 // from them client-side) has it silently stripped here, server-side.
 function parseRolesInput(body, actingUser) {
-  const ALLOWED = new Set(ROLE_PRIORITY);
+  // Finance admits exactly two kinds of account: Finance and Super Admin.
+  // Tracker roles (admin, PM, store, operator, CEO, client) are dropped.
+  // A Super Admin also carries 'admin' internally because shared code
+  // gates on it; finance.users' CHECK forbids 'admin' without 'super_admin'.
   let roles = normalizeUserRoles(Array.isArray(body.roles) && body.roles.length ? body.roles : body.role)
-    .filter(r => ALLOWED.has(r));
+    .filter(r => r === 'finance' || r === 'super_admin');
   if (roles.includes('super_admin') && !userHasRole(actingUser, 'super_admin')) {
     roles = roles.filter(r => r !== 'super_admin');
   }
-  if (!roles.length) roles = ['production_manager'];
-  // Client is external. If it appears alongside any internal role we drop
-  // the internal ones — an outside client account must never also carry
-  // admin/PM/store/operator/CEO privileges.
-  if (roles.includes('client') && roles.length > 1) roles = ['client'];
-  const primary = ROLE_PRIORITY.find(r => roles.includes(r)) || 'production_manager';
+  if (!roles.length) roles = ['finance'];
+  if (roles.includes('super_admin')) roles = ['super_admin', 'admin', ...roles.filter(r => r === 'finance')];
+  const primary = roles.includes('super_admin') ? 'super_admin' : 'finance';
   return { roles, primary };
 }
 
@@ -1883,9 +1947,9 @@ app.get('/api/users', requireAuth, async (req, res) => {
     const sql = getDb();
     const rows = await sql`
       SELECT u.*, inv.email AS invited_by_email,
-             (SELECT COUNT(*) FROM sessions s WHERE s.user_id = u.id AND s.revoked_at IS NULL) AS active_sessions
-      FROM users u
-      LEFT JOIN users inv ON inv.id = u.invited_by
+             (SELECT COUNT(*) FROM finance.sessions s WHERE s.user_id = u.id AND s.revoked_at IS NULL) AS active_sessions
+      FROM finance.users u
+      LEFT JOIN finance.users inv ON inv.id = u.invited_by
       ORDER BY u.created_at ASC
     `;
     res.json(rows.map(r => ({ ...publicUser(r), invited_by_email: r.invited_by_email, active_sessions: Number(r.active_sessions) || 0 })));
@@ -1909,7 +1973,7 @@ app.post('/api/users', requirePermission('user_admin'), async (req, res) => {
       return res.status(400).json({ error: 'Client accounts must be bound to a company at invite time.' });
     }
     const inserted = await sql`
-      INSERT INTO users (email, role, roles, client_company, invited_by)
+      INSERT INTO finance.users (email, role, roles, client_company, invited_by)
       VALUES (${email}, ${primary}, ${roles}, ${clientCompany}, ${req.user.id})
       ON CONFLICT (email) DO NOTHING
       RETURNING *
@@ -1946,7 +2010,7 @@ app.put('/api/users/:id', requirePermission('user_admin'), async (req, res) => {
     // Admin's row (e.g. ticking Finance) would silently strip super_admin,
     // since it's simply absent from what got submitted. Preserve it here.
     if (!userHasRole(req.user, 'super_admin')) {
-      const current = await sql`SELECT role, roles FROM users WHERE id = ${id}`;
+      const current = await sql`SELECT role, roles FROM finance.users WHERE id = ${id}`;
       const currentRoles = current.length
         ? normalizeUserRoles(Array.isArray(current[0].roles) && current[0].roles.length ? current[0].roles : current[0].role)
         : [];
@@ -1974,7 +2038,7 @@ app.put('/api/users/:id', requirePermission('user_admin'), async (req, res) => {
       return res.status(400).json({ error: 'Client accounts must be bound to a company.' });
     }
     const updated = await sql`
-      UPDATE users
+      UPDATE finance.users
          SET role = ${primary}, roles = ${roles}, client_company = ${clientCompany}
        WHERE id = ${id}
        RETURNING *
@@ -1994,7 +2058,7 @@ app.delete('/api/users/:id', requirePermission('user_admin'), async (req, res) =
     const sql = getDb();
     const id = parseInt(req.params.id, 10);
     if (id === req.user.id) return res.status(400).json({ error: "You can't delete yourself." });
-    const deleted = await sql`DELETE FROM users WHERE id = ${id} RETURNING *`;
+    const deleted = await sql`DELETE FROM finance.users WHERE id = ${id} RETURNING *`;
     if (!deleted.length) return res.status(404).json({ error: 'User not found' });
     await logAudit(sql, req, { action: 'user.delete', entityType: 'user', entityId: id, summary: `Removed ${deleted[0].email}` });
     res.json({ ok: true });
@@ -2018,7 +2082,7 @@ app.get('/api/users/:id/sessions', requireAuth, async (req, res) => {
     await dbReady;
     const sql = getDb();
     const id = parseInt(req.params.id, 10);
-    const rows = await sql`SELECT * FROM sessions WHERE user_id = ${id} ORDER BY last_seen_at DESC`;
+    const rows = await sql`SELECT * FROM finance.sessions WHERE user_id = ${id} ORDER BY last_seen_at DESC`;
     res.json(rows.map(r => ({
       id: r.id,
       device: describeUserAgent(r.user_agent),
@@ -2040,12 +2104,12 @@ app.post('/api/users/:id/sessions/:sid/revoke', requireAdmin, async (req, res) =
     const id = parseInt(req.params.id, 10);
     const sid = parseInt(req.params.sid, 10);
     const updated = await sql`
-      UPDATE sessions SET revoked_at = NOW()
+      UPDATE finance.sessions SET revoked_at = NOW()
       WHERE id = ${sid} AND user_id = ${id} AND revoked_at IS NULL
       RETURNING *
     `;
     if (!updated.length) return res.status(404).json({ error: 'Session not found or already logged out' });
-    const target = await sql`SELECT email FROM users WHERE id = ${id}`;
+    const target = await sql`SELECT email FROM finance.users WHERE id = ${id}`;
     await logAudit(sql, req, { action: 'user.session-revoke', entityType: 'user', entityId: id, summary: `Logged out a device for ${target[0]?.email || 'user #' + id}` });
     res.json({ ok: true });
   } catch (err) {
@@ -2059,9 +2123,9 @@ app.post('/api/users/:id/block', requirePermission('user_admin'), async (req, re
     const sql = getDb();
     const id = parseInt(req.params.id, 10);
     if (id === req.user.id) return res.status(400).json({ error: "You can't block yourself." });
-    const updated = await sql`UPDATE users SET blocked_at = NOW() WHERE id = ${id} RETURNING *`;
+    const updated = await sql`UPDATE finance.users SET blocked_at = NOW() WHERE id = ${id} RETURNING *`;
     if (!updated.length) return res.status(404).json({ error: 'User not found' });
-    await sql`UPDATE sessions SET revoked_at = NOW() WHERE user_id = ${id} AND revoked_at IS NULL`;
+    await sql`UPDATE finance.sessions SET revoked_at = NOW() WHERE user_id = ${id} AND revoked_at IS NULL`;
     await logAudit(sql, req, { action: 'user.block', entityType: 'user', entityId: id, summary: `Blocked ${updated[0].email} — all devices logged out` });
     res.json(publicUser(updated[0]));
   } catch (err) {
@@ -2074,7 +2138,7 @@ app.post('/api/users/:id/unblock', requirePermission('user_admin'), async (req, 
     await dbReady;
     const sql = getDb();
     const id = parseInt(req.params.id, 10);
-    const updated = await sql`UPDATE users SET blocked_at = NULL WHERE id = ${id} RETURNING *`;
+    const updated = await sql`UPDATE finance.users SET blocked_at = NULL WHERE id = ${id} RETURNING *`;
     if (!updated.length) return res.status(404).json({ error: 'User not found' });
     await logAudit(sql, req, { action: 'user.unblock', entityType: 'user', entityId: id, summary: `Unblocked ${updated[0].email}` });
     res.json(publicUser(updated[0]));
@@ -2112,7 +2176,7 @@ app.get('/api/audit', requireAuth, async (req, res) => {
       return s ? new Date(new Date(s).getTime() + 86400000).toISOString() : null;
     })() : null;
     let rows = await sql`
-      SELECT * FROM audit_log
+      SELECT * FROM finance.audit_log
       WHERE (${entity_type || null}::text IS NULL OR entity_type = ${entity_type || null})
         AND (${entityIdNum}::int IS NULL OR entity_id = ${entityIdNum})
         AND (${userIdNum}::int   IS NULL OR user_id   = ${userIdNum})

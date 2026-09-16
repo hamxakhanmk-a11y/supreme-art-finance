@@ -26083,7 +26083,7 @@ function renderUsersTab() {
           ? `<span class="inv-badge" style="text-transform:uppercase;font-size:10px;letter-spacing:0.04em;background:var(--bg2);color:var(--text2);padding:4px 10px;border-radius:10px;">${esc(visibleRolesOf(u).map(roleLabel).join(' + '))}${u.client_company ? ' · '+esc(u.client_company) : ''}</span>`
           : `<div class="user-role-checks" data-uid="${u.id}" style="display:flex;flex-direction:column;gap:4px;max-width:300px;">
               <div style="display:flex;flex-wrap:wrap;gap:4px 10px;">
-                ${(isSuperAdmin() ? [['super_admin','Super Admin']] : []).concat([['admin','Admin'],['production_manager','Prod. Manager'],['store_manager','Store Manager'],['finance','Finance'],['ceo','CEO'],['operator','Operator'],['client','Client']]).map(([r,lbl]) => `
+                ${(isSuperAdmin() ? [['super_admin','Super Admin']] : []).concat([['finance','Finance']]).map(([r,lbl]) => `
                   <label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;white-space:nowrap;">
                     <input type="checkbox" value="${r}" ${userRolesOf(u).includes(r)?'checked':''}
                            ${isMe && (r==='admin' || r==='super_admin') ? 'disabled' : ''}
@@ -26408,7 +26408,7 @@ function openInviteUser() {
     <div class="form-group"><label class="form-label">Email *</label><input type="email" id="invite-email" placeholder="someone@gmail.com"></div>
     <div class="form-group"><label class="form-label">Roles <span style="font-weight:400;color:var(--text2);">(pick one or more — access combines)</span></label>
       <div id="invite-roles" style="display:flex;flex-direction:column;gap:6px;">
-        ${(isSuperAdmin() ? [['super_admin','Super Admin',false]] : []).concat([['production_manager','Production Manager',true],['store_manager','Store Manager',false],['finance','Finance (view-only + delivery ledger)',false],['operator','Operator (Station only)',false],['ceo','CEO (view-only)',false],['admin','Admin',false],['client','Client (external — sees only the portal)',false]]).map(([r,lbl,def]) => `
+        ${(isSuperAdmin() ? [['super_admin','Super Admin',false]] : []).concat([['finance','Finance',true]]).map(([r,lbl,def]) => `
           <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;">
             <input type="checkbox" value="${r}" ${def?'checked':''} onchange="onInviteRolesChanged()"> ${lbl}
           </label>`).join('')}
