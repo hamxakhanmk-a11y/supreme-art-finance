@@ -2837,9 +2837,6 @@ td.jc-details-cell > input[type="text"] { padding-right: 20px; }
     <button class="mode-btn active" data-mode="jobs" id="mode-jobs-btn" onclick="setMode('jobs')">Jobs</button>
     <button class="mode-btn" data-mode="inventory" id="mode-inventory-btn" onclick="setMode('inventory')">Inventory</button>
     <button class="mode-btn" data-mode="reports" id="mode-reports-btn" onclick="setMode('reports')">Reports</button>
-    <button class="mode-btn" data-mode="stickers" id="mode-stickers-btn" onclick="setMode('stickers')">Stickers</button>
-    <button class="mode-btn" data-mode="station" id="mode-station-btn" onclick="setMode('station')">&#127981; Station</button>
-    <button class="mode-btn" data-mode="forms" id="mode-forms-btn" onclick="setMode('forms')">Forms</button>
     <button class="mode-btn" data-mode="users" onclick="setMode('users')" id="mode-users-btn">Users</button>
     <button class="mode-btn" data-mode="client-view" onclick="setMode('client-view')" id="mode-client-view-btn">&#128100; Client View</button>
   </div>
@@ -4527,11 +4524,6 @@ function renderUserChip() {
   lockTab('mode-jobs-btn',      true);
   lockTab('mode-inventory-btn', !op);
   lockTab('mode-reports-btn',   !op);
-  // Finance keeps every tab clickable — the blocked ones render a
-  // .role-block-msg overlay instead of the real content (see CSS above).
-  lockTab('mode-stickers-btn',  fin || hasPerm('stickers_print', 'view'));
-  lockTab('mode-station-btn',   fin || canRunStation());
-  lockTab('mode-forms-btn',     fin || hasPerm('forms_print', 'view'));
   // Users tab — open to whoever can see the Authorized Users list
   // (user_view) or manage Floor Operators (operator_admin — other
   // sections tagged .pm-hide), and finance (sees the block-msg placeholder).
@@ -4793,6 +4785,10 @@ function setMode(m) {
   // a server-side reject on station-update for the ceo role). Finance
   // may enter to see the role-block-msg placeholder.
   if (m === 'station' && !canRunStation() && !isFinance()) m = 'jobs';
+  // Stickers, Forms and Station are tracker-only — their nav buttons are
+  // gone from this app. Checked last, after every role rule above (the
+  // operator rule can rewrite m to 'station'), so nothing reaches them.
+  if (m === 'stickers' || m === 'forms' || m === 'station') m = 'jobs';
   mode = m;
   document.querySelectorAll('.mode-btn').forEach(b => b.classList.toggle('active', b.dataset.mode === m));
   requestAnimationFrame(() => syncFlowingTabIndicator('mode-switch'));
