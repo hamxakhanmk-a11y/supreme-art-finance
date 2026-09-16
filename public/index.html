@@ -4886,9 +4886,10 @@ function getFiltered() {
     if (view === 'done')    return isDone(j);
     if (view === 'blocked') return isBlocked(j);
     if (view === 'finalized') return _finalizedJobIds.has(j.id);
-    // Default 'all' view — hide new / CTP-queue jobs so they don't clutter
-    // the main list; both have their own tab.
-    return !isNewJob(j) && !isCtpQueue(j);
+    // Default 'all' view — every job except New, CTP-queue and Pending Stock
+    // (the same test as the tracker's Pending Stock tab). Those are
+    // pre-production states finance has no delivery to record against.
+    return !isNewJob(j) && !isCtpQueue(j) && j.issuance_status !== 'pending';
   });
 }
 
