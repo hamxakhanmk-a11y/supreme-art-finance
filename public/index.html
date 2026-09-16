@@ -2877,13 +2877,11 @@ td.jc-details-cell > input[type="text"] { padding-right: 20px; }
       <select class="filter" id="client-filter" onchange="setClientFilter(this.value)"><option value="">All companies</option></select>
       <select class="filter" id="machine-filter" onchange="setMachineFilter(this.value)"><option value="">All machines</option></select>
       <select class="filter" id="group-filter" onchange="setGroupFilter(this.value)" title="Filter by Job Group"><option value="">All groups</option></select>
-      <button id="create-group-btn" class="ceo-hide whole-toggle" onclick="playActionToggle(this); openCreateGroupPicker()" title="Start a new Job Group — pick the seed job and the group inherits every field from it. Sub jobs are duplicated from the group tile.">
-        <span class="whole-toggle-text">&#128230; Create Mil Job</span>
-      </button>
       <button id="shade-card-toggle" class="whole-toggle" onclick="toggleShadeCardFilter()" title="Show only shade-card jobs">
         <span class="whole-toggle-text">&#127912; <span id="shade-card-toggle-label">Shade Cards</span></span>
       </button>
       <input class="filter" type="text" id="po-filter" placeholder="PO No." oninput="setPOFilter(this.value)" style="width:130px;" title="Filter jobs by P.O. No. substring">
+      <input class="filter" type="text" id="challan-filter" placeholder="Challan No." oninput="setChallanFilter(this.value)" style="width:130px;" title="Filter jobs by a delivery's Challan No. substring">
     </div>
     <div class="jobs-filter-row">
       <select class="filter" id="stage-filter" onchange="setStageFilter(this.value)"><option value="">All stages</option></select>
@@ -3594,6 +3592,7 @@ let filterClient = '';
 // answering "what's running on / has been run on machine X."
 let filterMachine = '';
 let filterPO = '';
+let filterChallan = '';
 // Shade-card filter — '' (all) | 'only' (shade cards only) | 'hide' (production only)
 let filterShadeCard = '';
 let filterGroup = '';
@@ -4864,6 +4863,14 @@ function getFiltered() {
       const po = String(j.ref || '').toLowerCase();
       if (!po.includes(String(filterPO).toLowerCase())) return false;
     }
+    // Challan No. lives per delivery (in .notes). Same text the Jobs Report's
+    // own Challan No. search matches: every delivery's deliveryChallanText,
+    // which skips the legacy-backfill placeholder note.
+    if (filterChallan) {
+      const challans = (Array.isArray(j.deliveries) ? j.deliveries : [])
+        .map(d => deliveryChallanText(d).trim()).filter(Boolean).join(' | ').toLowerCase();
+      if (!challans.includes(String(filterChallan).trim().toLowerCase())) return false;
+    }
     if (filterShadeCard === 'only' && !j.is_shade_card) return false;
     if (filterShadeCard === 'hide' &&  j.is_shade_card) return false;
     if (filterMachine && j.machine !== filterMachine) return false;
@@ -5774,7 +5781,7 @@ function renderJobCard(j, opts) {
         ${(!_finalizedJobIds.has(j.id) && canWriteJobs()) ? (j.linked_job_id
           ? `<button class="ceo-hide" onclick="closeJobMore(this); unlinkJob(${j.id})">Unlink (E-${j.linked_job_id})</button>`
           : `<button class="ceo-hide" onclick="closeJobMore(this); openLinkJobPicker(${j.id})">Link Job</button>`) : ''}
-        ${canWriteJobs() && !clientPreview && !j.stock_group_name ? `<button class="ceo-hide" onclick="closeJobMore(this); openCreateGroupModal(${j.id})">&#128230; Create Mil Job</button><button class="ceo-hide" onclick="closeJobMore(this); openAddToGroupModal(${j.id})">&#128230; Add to Job Group</button>` : ''}
+        ${canWriteJobs() && !clientPreview && !j.stock_group_name ? `<button class="ceo-hide" onclick="closeJobMore(this); openAddToGroupModal(${j.id})">&#128230; Add to Job Group</button>` : ''}
         ${canWriteJobs() && !clientPreview && j.stock_group_name ? `<button class="ceo-hide" onclick="closeJobMore(this); removeJobFromGroup(${j.id},${jsStr(j.stock_group_name)})">&#128230; Remove from Job Group</button>` : ''}
         ${canPrintJobCard() ? `<button onclick="closeJobMore(this); printJobCard(${j.id})" class="${(j.print_count || 0) > 0 ? 'is-printed' : ''}" title="${(j.print_count || 0) > 0 ? `Printed ${j.print_count} time${j.print_count===1?'':'s'}${j.last_printed_at?' · last '+fmtDMYT(j.last_printed_at):''}` : 'Print job card'}">Print</button>` : ''}
         ${!done?`<button class="ceo-hide" onclick="closeJobMore(this); toggleBlock(${j.id})">${blocked?'Unblock':'Block'}</button>`:''}
@@ -6528,6 +6535,7 @@ function setStageFilter(v) { filterStage=v; renderJobs(); }
 function setClientFilter(v) { filterClient=v; renderJobs(); }
 function setMachineFilter(v) { filterMachine=v; renderJobs(); }
 function setPOFilter(v)      { filterPO = v; renderJobs(); }
+function setChallanFilter(v) { filterChallan = v; renderJobs(); }
 // Shade Cards toggle: '' = show everything, 'only' = show shade-card jobs.
 // The dedicated toggle button in the toolbar drives this — one click ON,
 // second click OFF, mirroring the Pending Stock button in inventory.
@@ -20607,6 +20615,7 @@ async function submitGroupDelivery(groupName) {
 // wants a different name later they can rename via the group ⋯ menu
 // (add a rename entry only if this becomes a common ask).
 async function openCreateGroupModal(jobId) {
+  return; // Create Mil Job is tracker-only — its buttons are gone from this app.
   if (!canWriteJobs()) return;
   const j = jobs.find(x => x.id === jobId);
   if (!j) return;
@@ -20635,6 +20644,7 @@ async function openCreateGroupModal(jobId) {
 // The group tile inherits all of the seed job's info via the shared
 // tile renderer.
 async function openCreateGroupPicker() {
+  return; // Create Mil Job is tracker-only — its buttons are gone from this app.
   if (!canWriteJobs()) return;
   const ungrouped = jobs
     .filter(j => j && !j.stock_group_name && !j.deleted_at)
