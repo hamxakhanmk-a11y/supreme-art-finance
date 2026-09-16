@@ -2967,16 +2967,6 @@ td.jc-details-cell > input[type="text"] { padding-right: 20px; }
         <div class="report-card-title">Jobs Report</div>
         <div class="report-card-desc">Tabular log of every delivered job — date, company, PO number, quantities, packets consumed, paper, machine, coatings. With print + Excel export.</div>
       </button>
-      <button class="report-card sm-hide" onclick="openReportsGroup('daily-production-group'); openDailyProduction();">
-        <div class="report-card-icon">&#127981;</div>
-        <div class="report-card-title">Daily Production</div>
-        <div class="report-card-desc">Per-machine totals for a given day &mdash; sheets, jobs, colors, plates and operators &mdash; auto-aggregated from job activity. Mirrors the paper register.</div>
-      </button>
-      <button class="report-card" id="trash-card-btn" onclick="openTrashPage()" style="display:none;">
-        <div class="report-card-icon">&#128465;</div>
-        <div class="report-card-title">Archive</div>
-        <div class="report-card-desc">Deleted jobs and imports are archived here for 30 days before being permanently removed. Anyone can view; only admin can restore or empty the archive.</div>
-      </button>
     </div>
   </div>
 
@@ -3036,7 +3026,7 @@ td.jc-details-cell > input[type="text"] { padding-right: 20px; }
     </div>
   </div>
 
-  <!-- Jobs Report group — Delivered Jobs + Production Report panes. -->
+  <!-- Jobs Report group — Delivered Jobs pane. -->
   <div id="jobs-group" class="reports-group" style="display:none;">
     <div class="reports-layout">
       <aside class="reports-sidebar">
@@ -3044,9 +3034,6 @@ td.jc-details-cell > input[type="text"] { padding-right: 20px; }
         <div class="rsb-section">Jobs</div>
         <button class="rsb-item active" data-rt="jobs-report" onclick="setReportsTab('jobs-report')">
           <span class="rsb-icon">&#128196;</span> Jobs
-        </button>
-        <button class="rsb-item" data-rt="prod-report" onclick="setReportsTab('prod-report')">
-          <span class="rsb-icon">&#128202;</span> Production Report
         </button>
       </aside>
       <main class="reports-content">
@@ -4532,8 +4519,6 @@ function renderUserChip() {
   // Finance see it too even though the server never actually allowed
   // them in). Admin can act (restore / empty) via trash_admin; CEO
   // browses only.
-  const trashBtn = document.getElementById('trash-card-btn');
-  if (trashBtn) trashBtn.style.display = hasPerm('trash_view', 'view') ? 'flex' : 'none';
   // CEOs see a read-only version of the app — flip a body class so the CSS
   // rule below hides every element tagged .ceo-hide in one go. Store Manager
   // gets the same .ceo-hide treatment on Jobs (read-only for them too), and
@@ -12768,6 +12753,7 @@ function openDashboard() {
 let trashCache = { jobs: [], imports: [], transactions: [], retention_days: 30 };
 
 function openTrashPage() {
+  return; // Archive is tracker-only — see openReportsGroup.
   // Admin can act, CEO can view (write buttons inside are .ceo-hide).
   if (!isAdmin() && !hasRole('ceo')) { notify('Admin or CEO only.'); return; }
   openReportsGroup('trash-group');
@@ -12778,6 +12764,7 @@ function openTrashPage() {
 // Remarks cells are editable overlays stored separately so admins can
 // add context the auto-totals can't capture.
 function openDailyProduction() {
+  return; // Daily Production is tracker-only — it loads data directly, so guard it here too.
   const today = (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; })();
   // One date picker per section pane, all kept in sync so flipping
   // between Printing / Die / Coatings for the same day never makes the
@@ -13961,6 +13948,8 @@ async function emptyTrash() {
 // Show one of the grouped views, hide the landing and other groups.
 // Pass the wrapper id (e.g. 'stocks-group', 'jobs-group', 'trash-group').
 function openReportsGroup(groupId) {
+  // Daily Production and Archive are tracker-only; their cards are gone.
+  if (groupId === 'daily-production-group' || groupId === 'trash-group') { exitReportsGroup(); return; }
   const landing = document.getElementById('reports-landing');
   if (landing) landing.style.display = 'none';
   document.querySelectorAll('#reports-mode .reports-group').forEach(g => {
@@ -13988,6 +13977,11 @@ function exitReportsGroup() {
 // All report views render inline now (no modals), so every tab name maps
 // to a #rt-<name> div and an open<Name>() builder.
 function setReportsTab(name) {
+  // Tracker-only panes: Production Report falls back to its sibling Jobs
+  // pane; Daily Production (dp-*) and Archive (trash-*) have no group left
+  // to show, so return to the Reports landing.
+  if (name === 'prod-report') name = 'jobs-report';
+  if (/^(dp|trash)-/.test(name)) { exitReportsGroup(); return; }
   document.querySelectorAll('.rsb-item').forEach(b => b.classList.toggle('active', b.dataset.rt === name));
   requestAnimationFrame(syncReportsFlowIndicators);
   const inlinePanes = ['stock-in', 'stock-out', 'manual-consumption', 'offcut-consumption', 'summary', 'inventory-report', 'jobs-report', 'prod-report', 'trash-jobs', 'trash-imports', 'trash-transactions', 'dp-printing', 'dp-die', 'dp-coatings', 'dp-breaking', 'dp-pasting'];
