@@ -2838,7 +2838,6 @@ td.jc-details-cell > input[type="text"] { padding-right: 20px; }
     <button class="mode-btn" data-mode="inventory" id="mode-inventory-btn" onclick="setMode('inventory')">Inventory</button>
     <button class="mode-btn" data-mode="reports" id="mode-reports-btn" onclick="setMode('reports')">Reports</button>
     <button class="mode-btn" data-mode="users" onclick="setMode('users')" id="mode-users-btn">Users</button>
-    <button class="mode-btn" data-mode="client-view" onclick="setMode('client-view')" id="mode-client-view-btn">&#128100; Client View</button>
   </div>
   <div class="topbar-right">
     <!-- Calculator is now reached via the floating round 🧮 launcher in the
@@ -4528,8 +4527,6 @@ function renderUserChip() {
   // (user_view) or manage Floor Operators (operator_admin — other
   // sections tagged .pm-hide), and finance (sees the block-msg placeholder).
   lockTab('mode-users-btn',     fin || hasPerm('user_view', 'view') || hasPerm('operator_admin'));
-  // Client View — preview access; finance sees the block-msg placeholder.
-  lockTab('mode-client-view-btn', fin || hasPerm('client_view_preview', 'view'));
   // Trash card — gated by trash_view (default admin/ceo, was previously
   // just "anyone who isn't an operator," which let PM/Store Manager/
   // Finance see it too even though the server never actually allowed
@@ -4785,10 +4782,11 @@ function setMode(m) {
   // a server-side reject on station-update for the ceo role). Finance
   // may enter to see the role-block-msg placeholder.
   if (m === 'station' && !canRunStation() && !isFinance()) m = 'jobs';
-  // Stickers, Forms and Station are tracker-only — their nav buttons are
-  // gone from this app. Checked last, after every role rule above (the
-  // operator rule can rewrite m to 'station'), so nothing reaches them.
-  if (m === 'stickers' || m === 'forms' || m === 'station') m = 'jobs';
+  // Stickers, Forms, Station and Client View are tracker-only — their nav
+  // buttons are gone from this app. Checked last, after every role rule
+  // above (the operator rule can rewrite m to 'station'), so nothing
+  // reaches them.
+  if (m === 'stickers' || m === 'forms' || m === 'station' || m === 'client-view') m = 'jobs';
   mode = m;
   document.querySelectorAll('.mode-btn').forEach(b => b.classList.toggle('active', b.dataset.mode === m));
   requestAnimationFrame(() => syncFlowingTabIndicator('mode-switch'));
