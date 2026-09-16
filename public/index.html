@@ -5037,9 +5037,11 @@ function renderStats() {
 }
 
 function renderTabs() {
-  // Finance only works the delivery end: New Jobs, CTP, Pending Stock,
-  // In Progress and Blocked are tracker tabs.
-  const views = [['all','All'],['storage','Ready to Deliver'],['partial','Partially Delivered'],['done','Delivered']];
+  // Finance only works the delivery end: New Jobs, CTP, Pending Stock and
+  // Blocked are tracker tabs. In Progress stays because a partially
+  // delivered job still at Pasting or earlier is filed there (see the
+  // 'partial' filter), and finance must be able to record its next delivery.
+  const views = [['all','All'],['active','In Progress'],['storage','Ready to Deliver'],['partial','Partially Delivered'],['done','Delivered']];
   // Finalized (wastage adjustment) is a Super Admin-only feature end to
   // end — the tab itself stays hidden from every other role, not just the
   // data, and regular Admins are deliberately excluded too.
@@ -6500,7 +6502,7 @@ function stageMachineSVG(stageIndex, { pending, clientPreview, isNew, blocked, e
 function render() { renderStats(); renderTabs(); renderJobs(); }
 function setView(v) {
   // Only this app's tabs (see renderTabs); anything else lands on Ready to Deliver.
-  if (!['all', 'storage', 'partial', 'done', 'finalized'].includes(v)) v = 'storage';
+  if (!['all', 'active', 'storage', 'partial', 'done', 'finalized'].includes(v)) v = 'storage';
   // Batch-print selection is a New Jobs / CTP feature — drop any ticks
   // when the user leaves both tabs so an accidental Print Selected can't
   // send stale ids that are no longer on screen.
