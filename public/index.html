@@ -2952,10 +2952,10 @@ td.jc-details-cell > input[type="text"] { padding-right: 20px; }
     <h2 style="margin:0 0 6px;font-size:22px;">Reports</h2>
     <p style="color:var(--text2);margin:0 0 22px;font-size:14px;">Stock movement, summaries, and pending imports — all printable.</p>
     <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(280px, 1fr));gap:16px;">
-      <button class="report-card" onclick="openReportsGroup('stocks-group')">
+      <button class="report-card superadmin-only-report" onclick="openReportsGroup('stocks-group')">
         <div class="report-card-icon">&#128200;</div>
         <div class="report-card-title">Board IN/OUT</div>
-        <div class="report-card-desc">Every stock-in and stock-out movement (with a Totals filter for each), Stock Summary, and Current Balance Summary. Pick a report from the sidebar inside.</div>
+        <div class="report-card-desc">Manual Job Card Consumption &mdash; paper issued against a manual job card number, for jobs not tracked in the app.</div>
       </button>
       <button class="report-card" onclick="openImportsPage()">
         <div class="report-card-icon">&#128666;</div>
@@ -2976,26 +2976,9 @@ td.jc-details-cell > input[type="text"] { padding-right: 20px; }
     <div class="reports-layout">
       <aside class="reports-sidebar">
         <button class="rsb-back" onclick="exitReportsGroup()" title="Back to Reports">&larr; Back</button>
-        <div class="rsb-section">Movement</div>
-        <button class="rsb-item active" data-rt="stock-in" onclick="setReportsTab('stock-in')">
-          <span class="rsb-icon" style="color:#166534;">&#8595;</span> Stock In
-        </button>
-        <button class="rsb-item" data-rt="stock-out" onclick="setReportsTab('stock-out')">
-          <span class="rsb-icon" style="color:#A32D2D;">&#8593;</span> Stock Out
-        </button>
-        <div class="rsb-section">Analysis</div>
-        <button class="rsb-item" data-rt="summary" onclick="setReportsTab('summary')">
-          <span class="rsb-icon">&#128203;</span> Stock Summary
-        </button>
-        <button class="rsb-item" data-rt="inventory-report" onclick="setReportsTab('inventory-report')">
-          <span class="rsb-icon">&#128230;</span> Current Balance Summary
-        </button>
         <div class="rsb-section superadmin-only-report">Manual</div>
-        <button class="rsb-item superadmin-only-report" data-rt="manual-consumption" onclick="setReportsTab('manual-consumption')">
+        <button class="rsb-item active superadmin-only-report" data-rt="manual-consumption" onclick="setReportsTab('manual-consumption')">
           <span class="rsb-icon" style="color:#A32D2D;">&#9997;</span> Manual Job Card Consumption
-        </button>
-        <button class="rsb-item" data-rt="offcut-consumption" onclick="setReportsTab('offcut-consumption')">
-          <span class="rsb-icon" style="color:#1D4ED8;">&#9986;</span> Offcut Consumption
         </button>
       </aside>
       <main class="reports-content">
@@ -13957,7 +13940,7 @@ function openReportsGroup(groupId) {
   });
   // Default each group to its first pane on entry so the user sees data
   // immediately rather than an empty sidebar+blank area.
-  if (groupId === 'stocks-group')   setReportsTab('stock-in');
+  if (groupId === 'stocks-group')   setReportsTab('manual-consumption');
   if (groupId === 'jobs-group')     setReportsTab('jobs-report');
   if (groupId === 'trash-group')    setReportsTab('trash-jobs');
   requestAnimationFrame(syncReportsFlowIndicators);
@@ -13981,6 +13964,8 @@ function setReportsTab(name) {
   // pane; Daily Production (dp-*) and Archive (trash-*) have no group left
   // to show, so return to the Reports landing.
   if (name === 'prod-report') name = 'jobs-report';
+  // Board IN/OUT keeps only Manual Job Card Consumption in this app.
+  if (['stock-in', 'stock-out', 'summary', 'inventory-report', 'offcut-consumption'].includes(name)) name = 'manual-consumption';
   if (/^(dp|trash)-/.test(name)) { exitReportsGroup(); return; }
   document.querySelectorAll('.rsb-item').forEach(b => b.classList.toggle('active', b.dataset.rt === name));
   requestAnimationFrame(syncReportsFlowIndicators);
