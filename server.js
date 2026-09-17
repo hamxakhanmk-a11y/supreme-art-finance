@@ -274,7 +274,8 @@ function getDb() {
 // from_tracker_v1) — a DB already stamped with an earlier version would
 // otherwise hit the fast-path and never widen the CHECK or run that copy.
 // Bumped again for jobs.rate / jobs.tax_pct and finance.product_rates.
-const SCHEMA_VERSION = 'v2026-09-17-finance-pricing';
+// Bumped again for finance.company_settings (NTN, Destination per company).
+const SCHEMA_VERSION = 'v2026-09-17-finance-company-settings';
 
 // This app shares its Neon database with the Job Tracker app (it started as
 // a copy of it). Both run initDb() at boot, so they must NOT share the one
@@ -1560,6 +1561,21 @@ async function initDb() {
         id          SERIAL PRIMARY KEY,
         product     TEXT NOT NULL UNIQUE,
         rate        NUMERIC NOT NULL,
+        updated_by  TEXT,
+        updated_at  TIMESTAMPTZ DEFAULT NOW()
+      )
+    `;
+    // Company Settings: NTN and Destination per company, keyed by the same
+    // company name jobs.client holds. Read-only on the job card — auto-
+    // filled by matching job.client (case-insensitive), never stored on
+    // the job itself, so a company's NTN/Destination always reflects
+    // whatever's set here right now.
+    await sql`
+      CREATE TABLE IF NOT EXISTS finance.company_settings (
+        id          SERIAL PRIMARY KEY,
+        company     TEXT NOT NULL UNIQUE,
+        ntn         TEXT,
+        destination TEXT,
         updated_by  TEXT,
         updated_at  TIMESTAMPTZ DEFAULT NOW()
       )
@@ -6744,6 +6760,79 @@ app.delete('/api/product-rates/:id', requireDeliveryWriter, async (req, res) => 
     await logAudit(sql, req, {
       action: 'product_rate.delete', entityType: 'product_rate', entityId: id,
       summary: `Product Rate removed: "${deleted[0].product}"`,
+    });
+    res.json({ ok: true });
+  } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
+});
+
+// ── Company Settings (Supreme Art Finance only) ───────────────────
+// NTN and Destination per company, matched against jobs.client on the
+// job card (companyInfoLine on the client) — same shape as Product Rate.
+app.get('/api/company-settings', requireAuth, async (req, res) => {
+  try {
+    await dbReady;
+    const sql = getDb();
+    const rows = await sql`SELECT * FROM finance.company_settings ORDER BY company ASC`;
+    res.json(rows);
+  } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
+});
+app.post('/api/company-settings', requireDeliveryWriter, async (req, res) => {
+  try {
+    await dbReady;
+    const sql = getDb();
+    const company = String(req.body?.company ?? '').trim();
+    const ntn = String(req.body?.ntn ?? '').trim() || null;
+    const destination = String(req.body?.destination ?? '').trim() || null;
+    if (!company) return res.status(400).json({ error: 'Company name is required.' });
+    const existing = await sql`SELECT id FROM finance.company_settings WHERE lower(company) = lower(${company})`;
+    if (existing.length) return res.status(409).json({ error: `"${company}" already has settings — edit it instead of adding a duplicate.` });
+    const inserted = await sql`
+      INSERT INTO finance.company_settings (company, ntn, destination, updated_by, updated_at)
+      VALUES (${company}, ${ntn}, ${destination}, ${req.user.email}, NOW())
+      RETURNING *
+    `;
+    await logAudit(sql, req, {
+      action: 'company_settings.create', entityType: 'company_settings', entityId: inserted[0].id,
+      summary: `Company Settings added: "${company}"`,
+    });
+    res.json(inserted[0]);
+  } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
+});
+app.put('/api/company-settings/:id', requireDeliveryWriter, async (req, res) => {
+  try {
+    await dbReady;
+    const sql = getDb();
+    const id = parseInt(req.params.id, 10);
+    const company = String(req.body?.company ?? '').trim();
+    const ntn = String(req.body?.ntn ?? '').trim() || null;
+    const destination = String(req.body?.destination ?? '').trim() || null;
+    if (!company) return res.status(400).json({ error: 'Company name is required.' });
+    const dupe = await sql`SELECT id FROM finance.company_settings WHERE lower(company) = lower(${company}) AND id != ${id}`;
+    if (dupe.length) return res.status(409).json({ error: `"${company}" already has settings on a different row.` });
+    const updated = await sql`
+      UPDATE finance.company_settings
+         SET company = ${company}, ntn = ${ntn}, destination = ${destination}, updated_by = ${req.user.email}, updated_at = NOW()
+       WHERE id = ${id}
+       RETURNING *
+    `;
+    if (!updated.length) return res.status(404).json({ error: 'Company Settings row not found' });
+    await logAudit(sql, req, {
+      action: 'company_settings.update', entityType: 'company_settings', entityId: id,
+      summary: `Company Settings updated: "${company}"`,
+    });
+    res.json(updated[0]);
+  } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
+});
+app.delete('/api/company-settings/:id', requireDeliveryWriter, async (req, res) => {
+  try {
+    await dbReady;
+    const sql = getDb();
+    const id = parseInt(req.params.id, 10);
+    const deleted = await sql`DELETE FROM finance.company_settings WHERE id = ${id} RETURNING *`;
+    if (!deleted.length) return res.status(404).json({ error: 'Company Settings row not found' });
+    await logAudit(sql, req, {
+      action: 'company_settings.delete', entityType: 'company_settings', entityId: id,
+      summary: `Company Settings removed: "${deleted[0].company}"`,
     });
     res.json({ ok: true });
   } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }

@@ -2882,7 +2882,8 @@ td.jc-details-cell > input[type="text"] { padding-right: 20px; }
         <span class="whole-toggle-text">&#127912; <span id="shade-card-toggle-label">Shade Cards</span></span>
       </button>
       <input class="filter" type="text" id="po-filter" placeholder="PO No." oninput="setPOFilter(this.value)" style="width:130px;" title="Filter jobs by P.O. No. substring">
-      <input class="filter" type="text" id="challan-filter" placeholder="Challan No." oninput="setChallanFilter(this.value)" style="width:130px;" title="Filter jobs by a delivery's Challan No. substring">
+      <input class="filter" type="text" id="challan-filter" placeholder="Invoice No." oninput="setChallanFilter(this.value)" style="width:130px;" title="Filter jobs by a delivery's Invoice No. substring">
+      <button class="btn btn-sm delivery-write-only-report" onclick="openCompanySettings()" title="Set NTN and Destination per company — auto-fills on every job card for that company">&#127970; Company Settings</button>
     </div>
     <div class="jobs-filter-row">
       <select class="filter" id="date-filter" onchange="setDateRange(this.value)">
@@ -3581,6 +3582,7 @@ function particularsRowsFor(job) {
 let jobs = [];
 let inventory = [];          // cached inventory items (refreshed on load + after mutations)
 let productRates = [];       // cached Product Rate table (Supreme Art Finance only) — see loadProductRates()
+let companySettings = [];    // cached Company Settings (NTN, Destination) — see loadCompanySettings()
 let stockGroups = [];        // cached stock groups entity (client/product/po_qty template shared across sub jobs)
 // Helper: look up a group entity by id — returns undefined if not
 // loaded yet (safe to fall back to the sub job's own fields in that
@@ -4682,6 +4684,22 @@ function effectiveRate(job) {
   if (job && job.rate !== null && job.rate !== undefined && job.rate !== '') return { value: Number(job.rate), suggested: false };
   const suggested = productRateFor(job && job.name);
   return suggested !== null ? { value: suggested, suggested: true } : null;
+}
+// Company Settings (NTN, Destination) — Supreme Art Finance only. Loaded
+// once at boot like Product Rate; refreshed after any add/edit/delete on
+// the Company Settings modal (see openCompanySettings, Jobs toolbar).
+async function loadCompanySettings() {
+  try {
+    companySettings = await api('GET', '/api/company-settings');
+  } catch (e) {
+    companySettings = [];
+  }
+}
+// Case-insensitive lookup by company name — matches job.client.
+function companySettingsFor(company) {
+  const name = String(company || '').trim().toLowerCase();
+  if (!name) return null;
+  return companySettings.find(c => String(c.company || '').trim().toLowerCase() === name) || null;
 }
 // Rs 12.5, Rs 12 (no trailing zeros) — up to 2 decimal places.
 function fmtRate(n) { return 'Rs ' + Number(n).toLocaleString(undefined, { maximumFractionDigits: 2 }); }
@@ -11454,9 +11472,9 @@ function openJobsReport() {
         </div>
       </div>
       <div style="min-width:160px;">
-        <div class="dash-flbl">Challan No. Search</div>
+        <div class="dash-flbl">Invoice No. Search</div>
         <div class="search-wrap">
-          <input type="text" id="jr-challan-search" value="${esc(jobsReportState.challanSearch)}" placeholder="Search Challan No…" oninput="setJrChallanSearch(this.value)">
+          <input type="text" id="jr-challan-search" value="${esc(jobsReportState.challanSearch)}" placeholder="Search Invoice No…" oninput="setJrChallanSearch(this.value)">
           <span class="search-icon">&#128269;</span>
         </div>
       </div>` : ''}
@@ -12053,7 +12071,7 @@ function renderJobsReport() {
           <th ${th}>Company</th>
           <th ${th}>PO No.</th>
           <th ${th}>Batch No.</th>
-          <th ${th}>Challan No.</th>
+          <th ${th}>Invoice No.</th>
           ${milMode ? `<th ${thR}>Mil Qty</th>` : ''}
           <th ${thR}>PO Qty</th>
           <th ${thR}>Unit Carton Qty</th>
@@ -12095,7 +12113,7 @@ async function exportJobsReport() {
   const rows = buildJobsReportRows();
   if (!rows.length) { notify('Nothing to export — empty filter result.'); return; }
   const milMode = !!jobsReportState.milOnly;
-  const header = ['Job ID', 'Job Name', 'Created', 'Delivered', 'Company', 'PO No.', 'Batch No.', 'Challan No.',
+  const header = ['Job ID', 'Job Name', 'Created', 'Delivered', 'Company', 'PO No.', 'Batch No.', 'Invoice No.',
     ...(milMode ? ['Mil Qty'] : []),
     'PO Qty', 'Unit Carton Qty', 'Delivered Qty', 'Wastage', 'Ready Qty', 'Packets Consumed', 'Paper', 'Machine', 'Coatings'];
   const aoa = [header];
@@ -12197,7 +12215,7 @@ function printJobsReport() {
           <th ${tdL}>Company</th>
           <th ${tdL}>PO No.</th>
           <th ${tdL}>Batch No.</th>
-          <th ${tdL}>Challan No.</th>
+          <th ${tdL}>Invoice No.</th>
           ${milMode ? `<th ${tdR}>Mil Qty</th>` : ''}
           <th ${tdR}>PO Qty</th>
           <th ${tdR}>Unit Carton Qty</th>
@@ -19574,8 +19592,13 @@ function jobForm(j={}, opts) {
     ${specsSection(j.particulars||{}, coatings, j)}
     ${ctpSetupRow(j.particulars||{})}
     <div id="jc-particulars-wrap">${particularsTable(j.particulars||{}, j, opts.particularsOpts)}</div>
-    ${deliveriesSection(j, opts)}
-    ${pricingSection(j)}
+    <div class="jc-delivery-pricing ceo-hide-inner" style="margin-top:16px;padding:12px 14px;background:#fff;border:1px solid var(--border);border-radius:10px;">
+      ${deliveriesSection(j, opts)}
+      ${companyInfoLine(j)}
+      <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border);">
+        ${pricingSection(j)}
+      </div>
+    </div>
     <div class="jc-extras">
       <div style="font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;">Additional notes (digital tracking only — not on printed card)</div>
       <div class="form-group"><label class="form-label">Notes / Special Instructions</label><textarea class="form-ta" id="f-notes" placeholder="Any special instructions...">${v(j.notes)}</textarea></div>
@@ -19707,12 +19730,12 @@ function deliveriesSection(j, opts) {
           <input type="text" id="deliv-batch" value="${esc(j.bno || '')}" placeholder="e.g. B-11" title="Pre-filled from the job card's Batch No. — edit if this shipment carries a different batch." style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;box-sizing:border-box;">
         </div>`}
         <div style="min-width:0;">
-          <label style="font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:0.4px;display:block;margin-bottom:2px;">FBR No.</label>
-          <input type="text" id="deliv-fbr" placeholder="e.g. 12345678901234" title="FBR sales tax invoice number for this shipment." style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;box-sizing:border-box;">
+          <label style="font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:0.4px;display:block;margin-bottom:2px;">E-FBR No.</label>
+          <input type="text" id="deliv-fbr" placeholder="e.g. 12345678901234" title="FBR electronic sales tax invoice number for this shipment." style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;box-sizing:border-box;">
         </div>
         <div style="min-width:0;">
-          <label style="font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:0.4px;display:block;margin-bottom:2px;">${isShadeCard ? 'Delivery Challan (auto)' : 'Challan No.'}</label>
-          <input type="text" id="deliv-notes" ${isShadeCard ? 'readonly' : ''} placeholder="${isShadeCard ? 'Assigned on save…' : 'e.g. CH-042'}" title="${isShadeCard ? 'Always auto-numbered against the shop\'s single DC register (DC-01, DC-02, …) — not editable. The same number to write into the physical DC register.' : ''}" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;box-sizing:border-box;${isShadeCard ? 'background:#f3f4f6;color:var(--text2);cursor:not-allowed;' : ''}">
+          <label style="font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:0.4px;display:block;margin-bottom:2px;">${isShadeCard ? 'Delivery Challan (auto)' : 'Invoice No.'}</label>
+          <input type="text" id="deliv-notes" ${isShadeCard ? 'readonly' : ''} placeholder="${isShadeCard ? 'Assigned on save…' : 'e.g. INV-042'}" title="${isShadeCard ? 'Always auto-numbered against the shop\'s single DC register (DC-01, DC-02, …) — not editable. The same number to write into the physical DC register.' : ''}" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;box-sizing:border-box;${isShadeCard ? 'background:#f3f4f6;color:var(--text2);cursor:not-allowed;' : ''}">
         </div>
         <button type="button" class="btn btn-primary" style="background:#166534;border-color:#166534;padding:8px 14px;white-space:nowrap;" onclick="${managerMode ? `recordDeliveryManager(${j.id})` : `recordDelivery(${j.id})`}">+ Record Delivery</button>
       </div>${j.linked_job_id ? `<div style="margin-top:8px;">
@@ -19724,7 +19747,7 @@ function deliveriesSection(j, opts) {
           ? `<div style="margin-top:10px;padding:8px 12px;background:#fff7ed;border:1px solid #fed7aa;border-radius:8px;color:#9a3412;font-size:12px;">Job is at Pasting &mdash; record some pasted cartons on the Pasting station to enable partial shipping from here.</div>`
           : '');
 
-  return `<div class="jc-deliveries ceo-hide-inner" style="margin-top:16px;padding:12px 14px;background:#fff;border:1px solid var(--border);border-radius:10px;">
+  return `<div class="jc-deliveries">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
       <div style="font-size:12px;color:var(--text2);text-transform:uppercase;letter-spacing:0.5px;font-weight:700;">Deliveries</div>
       ${statusPill}
@@ -19747,8 +19770,8 @@ function deliveriesSection(j, opts) {
           <th style="text-align:right;padding:6px 8px;border-bottom:1px solid var(--border);">${countLabel}</th>
           ${isShadeCard ? '' : `<th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--border);">PO No.</th>
           <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--border);">Batch No.</th>`}
-          <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--border);">FBR No.</th>
-          <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--border);">Challan No.</th>
+          <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--border);">E-FBR No.</th>
+          <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--border);">Invoice No.</th>
           <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--border);">By</th>
           <th style="padding:6px 8px;border-bottom:1px solid var(--border);"></th>
         </tr>
@@ -19759,31 +19782,42 @@ function deliveriesSection(j, opts) {
   </div>`;
 }
 
+// Company info (NTN, Destination) — read-only on every job card, sourced
+// from Company Settings by job.client (case-insensitive), same lookup
+// shape as productRateFor(). Never editable here; see openCompanySettings().
+function companyInfoLine(j) {
+  const c = companySettingsFor(j && j.client);
+  if (!c || (!c.ntn && !c.destination)) return '';
+  const parts = [];
+  if (c.ntn)         parts.push(`<b>NTN</b> ${esc(c.ntn)}`);
+  if (c.destination) parts.push(`<b>Destination</b> ${esc(c.destination)}`);
+  return `<div style="font-size:12px;color:var(--text);margin:10px 0;">${parts.join(' &middot; ')}</div>`;
+}
 // Pricing (Supreme Art Finance only) — Rate (price per unit carton) and
-// Tax %, editable by whoever can record deliveries. Read-only text for
-// everyone else, rather than a locked/disabled form: nothing here needs
-// DOM-locking the way the rest of the card does (see
-// lockJobCardExceptDeliveries), it just never renders inputs to begin with.
+// Sale Tax %, editable by whoever can record deliveries. Read-only text
+// for everyone else, rather than a locked/disabled form: nothing here
+// needs DOM-locking the way the rest of the card does (see
+// lockJobCardExceptDeliveries), it just never renders inputs to begin
+// with. Lives inside the same box as Deliveries (deliveryAndPricingSection)
+// — invoicing information together, not two separate cards.
 function pricingSection(j) {
   const r = effectiveRate(j);
   const taxPct = (j.tax_pct !== null && j.tax_pct !== undefined && j.tax_pct !== '') ? j.tax_pct : 18;
   if (!canRecordDelivery()) {
-    return `<div class="jc-pricing" style="margin-top:16px;padding:12px 14px;background:#fff;border:1px solid var(--border);border-radius:10px;">
-      <div style="font-size:12px;color:var(--text2);text-transform:uppercase;letter-spacing:0.5px;font-weight:700;margin-bottom:8px;">Pricing</div>
-      <div style="font-size:13px;color:var(--text);">Rate: <b>${r ? fmtRate(r.value) + (r.suggested ? ' <span style="font-weight:400;font-style:italic;color:var(--text2);">(suggested)</span>' : '') : '—'}</b> &middot; Tax: <b>${esc(String(taxPct))}%</b></div>
+    return `<div class="jc-pricing">
+      <div style="font-size:13px;color:var(--text);">Rate: <b>${r ? fmtRate(r.value) + (r.suggested ? ' <span style="font-weight:400;font-style:italic;color:var(--text2);">(suggested)</span>' : '') : '—'}</b> &middot; Sale Tax: <b>${esc(String(taxPct))}%</b></div>
     </div>`;
   }
   const ratePrefill = (j.rate !== null && j.rate !== undefined && j.rate !== '') ? j.rate : '';
   const ratePlaceholder = (r && r.suggested) ? `Suggested: ${fmtRate(r.value)}` : 'e.g. 12.50';
-  return `<div class="jc-pricing" style="margin-top:16px;padding:12px 14px;background:#fff;border:1px solid var(--border);border-radius:10px;">
-    <div style="font-size:12px;color:var(--text2);text-transform:uppercase;letter-spacing:0.5px;font-weight:700;margin-bottom:8px;">Pricing</div>
+  return `<div class="jc-pricing">
     <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:8px;align-items:end;max-width:420px;">
       <div style="min-width:0;">
         <label style="font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:0.4px;display:block;margin-bottom:2px;">Rate / Carton</label>
         <input type="number" id="pr-rate" min="0" step="any" value="${esc(String(ratePrefill))}" placeholder="${esc(ratePlaceholder)}" title="Same rate for the whole job until changed here. Leave blank to fall back to the Product Rate table's current suggestion." style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;box-sizing:border-box;">
       </div>
       <div style="min-width:0;">
-        <label style="font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:0.4px;display:block;margin-bottom:2px;">Tax %</label>
+        <label style="font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:0.4px;display:block;margin-bottom:2px;">Sale Tax %</label>
         <input type="number" id="pr-tax" min="0" step="any" value="${esc(String(taxPct))}" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;box-sizing:border-box;">
       </div>
       <button type="button" class="btn btn-primary" style="background:#166534;border-color:#166534;padding:8px 14px;white-space:nowrap;" onclick="saveJobPricing(${j.id})">Save Pricing</button>
@@ -19893,6 +19927,100 @@ async function deleteProductRate(id) {
     renderProductRatesPage();
     render();
     notify('Product Rate deleted');
+  } catch (e) { notify('Error: ' + e.message); }
+  showSaving(false);
+}
+
+// ── Company Settings (Supreme Art Finance only) ────────────────────
+// NTN and Destination per company — triggered from the Jobs toolbar
+// button, not a Reports card. Auto-fills on every job card for that
+// company (companyInfoLine, matched by job.client).
+function openCompanySettings() {
+  openModal(`<div class="modal" onclick="event.stopPropagation()" style="max-width:640px;">
+    <h2>&#127970; Company Settings</h2>
+    <div style="font-size:12px;color:var(--text2);margin-bottom:12px;">NTN and Destination per company — auto-fills on every job card for that company (matched by name, case-insensitive).</div>
+    <div id="company-settings-list">Loading&hellip;</div>
+    <div class="modal-actions">
+      <button class="btn" onclick="closeModal()">Close</button>
+      <button class="btn btn-primary" onclick="openCompanySettingRowModal()">+ Add Company</button>
+    </div>
+  </div>`);
+  loadCompanySettings().then(renderCompanySettingsList);
+}
+function renderCompanySettingsList() {
+  const el = document.getElementById('company-settings-list');
+  if (!el) return; // modal already closed
+  const rows = [...companySettings].sort((a, b) => String(a.company).localeCompare(String(b.company)));
+  el.innerHTML = rows.length
+    ? `<table style="width:100%;border-collapse:collapse;font-size:13px;">
+        <thead><tr style="background:#f3f4f6;">
+          <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--border);">Company</th>
+          <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--border);">NTN</th>
+          <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--border);">Destination</th>
+          <th style="padding:6px 8px;border-bottom:1px solid var(--border);"></th>
+        </tr></thead>
+        <tbody>${rows.map(c => `<tr>
+          <td style="padding:6px 8px;">${esc(c.company)}</td>
+          <td style="padding:6px 8px;">${esc(c.ntn || '')}</td>
+          <td style="padding:6px 8px;">${esc(c.destination || '')}</td>
+          <td style="padding:6px 8px;text-align:center;white-space:nowrap;">
+            <button class="btn btn-sm" onclick="openCompanySettingRowModal(${c.id})">Edit</button>
+            <button class="btn btn-sm btn-danger" onclick="deleteCompanySetting(${c.id})">Delete</button>
+          </td>
+        </tr>`).join('')}</tbody>
+      </table>`
+    : `<div style="text-align:center;color:var(--text3);font-style:italic;padding:16px;">No companies set up yet.</div>`;
+}
+function openCompanySettingRowModal(id) {
+  const row = id ? companySettings.find(c => c.id === id) : null;
+  openModal(`<div class="modal" onclick="event.stopPropagation()">
+    <h2>${row ? 'Edit' : 'Add'} Company Settings</h2>
+    <div class="form-group"><label class="form-label">Company Name *</label>
+      <select id="cs-modal-company-select" onchange="document.getElementById('cs-modal-company').value=this.value" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:#fff;margin-bottom:6px;">
+        <option value="">&mdash; Pick from existing companies, or type below &mdash;</option>
+        ${clientCompanyOptions('')}
+      </select>
+      <input type="text" id="cs-modal-company" value="${row ? esc(row.company) : ''}" placeholder="e.g. Fenbro">
+    </div>
+    <div class="form-group"><label class="form-label">NTN</label><input type="text" id="cs-modal-ntn" value="${row ? esc(row.ntn || '') : ''}" placeholder="e.g. 1234567-8"></div>
+    <div class="form-group"><label class="form-label">Destination</label><input type="text" id="cs-modal-destination" value="${row ? esc(row.destination || '') : ''}" placeholder="e.g. Karachi"></div>
+    <div class="modal-actions">
+      <button class="btn" onclick="openCompanySettings()">Cancel</button>
+      <button class="btn btn-primary" onclick="saveCompanySetting(${id || 'null'})">${row ? 'Save' : 'Add'}</button>
+    </div>
+  </div>`);
+}
+async function saveCompanySetting(id) {
+  const company = ((document.getElementById('cs-modal-company')||{}).value || '').trim();
+  const ntn = ((document.getElementById('cs-modal-ntn')||{}).value || '').trim();
+  const destination = ((document.getElementById('cs-modal-destination')||{}).value || '').trim();
+  if (!company) { await alertDialog({ title: 'Enter a company name', kind: 'warn' }); return; }
+  showSaving(true);
+  try {
+    if (id) await api('PUT', `/api/company-settings/${id}`, { company, ntn, destination });
+    else    await api('POST', '/api/company-settings', { company, ntn, destination });
+    await loadCompanySettings();
+    render();
+    notify('Company Settings saved');
+    openCompanySettings();
+  } catch (e) { notify('Error: ' + e.message); }
+  showSaving(false);
+}
+async function deleteCompanySetting(id) {
+  const row = companySettings.find(c => c.id === id);
+  const ok = await confirmDialog({
+    title: `Delete settings for "${row ? row.company : 'this company'}"?`,
+    message: "NTN and Destination will stop showing on that company's job cards.",
+    danger: true, confirmText: 'Delete',
+  });
+  if (!ok) return;
+  showSaving(true);
+  try {
+    await api('DELETE', `/api/company-settings/${id}`);
+    await loadCompanySettings();
+    render();
+    notify('Company Settings deleted');
+    openCompanySettings();
   } catch (e) { notify('Error: ' + e.message); }
   showSaving(false);
 }
@@ -20145,14 +20273,14 @@ function openDeliverLinkedModal(jobId) {
           <input type="text" id="${prefix}-batch" value="${esc(jb.bno || '')}">
         </div>
         <div class="form-group">
-          <label class="form-label">FBR No.</label>
+          <label class="form-label">E-FBR No.</label>
           <input type="text" id="${prefix}-fbr" placeholder="e.g. 12345678901234">
         </div>
       </div>
     </div>`;
   openModal(`<div class="modal" onclick="event.stopPropagation()">
     <h2>&#128279; Deliver Linked Jobs</h2>
-    <div style="font-size:12px;color:var(--text2);margin-bottom:12px;">One challan / invoice, both jobs. Enter total unit cartons — they split automatically by ready qty (or unit carton qty).</div>
+    <div style="font-size:12px;color:var(--text2);margin-bottom:12px;">One invoice, both jobs. Enter total unit cartons — they split automatically by ready qty (or unit carton qty).</div>
     <div style="margin-bottom:14px;">
       <label class="form-label" style="font-weight:700;font-size:13px;">Total Unit Cartons (both jobs) *</label>
       <input type="number" id="dl-total" min="1" step="any"
@@ -20163,7 +20291,7 @@ function openDeliverLinkedModal(jobId) {
     ${rowHtml(partner, 'dl-b')}
     <div class="form-row">
       <div class="form-group"><label class="form-label">Date *</label><input type="date" id="dl-date" value="${new Date().toISOString().slice(0,10)}"></div>
-      <div class="form-group"><label class="form-label">Challan No. <span style="font-weight:400;color:var(--text2);">(shared)</span></label><input type="text" id="dl-challan" placeholder="e.g. CH-042"></div>
+      <div class="form-group"><label class="form-label">Invoice No. <span style="font-weight:400;color:var(--text2);">(shared)</span></label><input type="text" id="dl-challan" placeholder="e.g. INV-042"></div>
     </div>
     <div class="modal-actions">
       <button class="btn" onclick="closeModal()">Cancel</button>
@@ -20841,8 +20969,8 @@ function openDeliverGroupModal(groupName) {
       <div class="form-group"><label class="form-label">Batch No.</label><input type="text" id="dg-batch" placeholder="e.g. B-101"></div>
     </div>
     <div class="form-row">
-      <div class="form-group"><label class="form-label">FBR No.</label><input type="text" id="dg-fbr" placeholder="e.g. 12345678901234"></div>
-      <div class="form-group"><label class="form-label">Challan No.</label><input type="text" id="dg-notes" placeholder="e.g. CH-042"></div>
+      <div class="form-group"><label class="form-label">E-FBR No.</label><input type="text" id="dg-fbr" placeholder="e.g. 12345678901234"></div>
+      <div class="form-group"><label class="form-label">Invoice No.</label><input type="text" id="dg-notes" placeholder="e.g. INV-042"></div>
     </div>
     <div class="modal-actions">
       <button class="btn" onclick="closeModal()">Cancel</button>
@@ -27366,7 +27494,7 @@ async function exportClientSummary(containerId) {
     XLSX.utils.book_append_sheet(wb, ws, 'Mil Products');
   }
   if (cache.ships.length) {
-    const aoa = [['Date','Job ID','Product','PO No.','Batch No.','Challan No.','Unit Cartons']];
+    const aoa = [['Date','Job ID','Product','PO No.','Batch No.','Invoice No.','Unit Cartons']];
     for (const d of cache.ships) {
       aoa.push([
         d.date ? fmtDMY(d.date) : '',
@@ -27635,7 +27763,7 @@ async function init() {
     renderUserChip();
     // Operators can't read inventory (403), so skip the call for them.
     // Everyone else loads jobs + inventory in parallel.
-    const loaders = [loadJobs(), loadPrintingMachines(), loadMachineRoster(), loadProductRates()];
+    const loaders = [loadJobs(), loadPrintingMachines(), loadMachineRoster(), loadProductRates(), loadCompanySettings()];
     if (!isOperator()) loaders.push(loadInventory());
     await Promise.all(loaders);
     // Route to the same landing tab the login flow uses so a refresh
