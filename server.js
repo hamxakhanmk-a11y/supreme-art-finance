@@ -273,7 +273,8 @@ function getDb() {
 // levels from the tracker's register (finance_role_permissions_admin_ceo_
 // from_tracker_v1) — a DB already stamped with an earlier version would
 // otherwise hit the fast-path and never widen the CHECK or run that copy.
-const SCHEMA_VERSION = 'v2026-09-17-finance-admin-ceo';
+// Bumped again for jobs.rate / jobs.tax_pct and finance.product_rates.
+const SCHEMA_VERSION = 'v2026-09-17-finance-pricing';
 
 // This app shares its Neon database with the Job Tracker app (it started as
 // a copy of it). Both run initDb() at boot, so they must NOT share the one
@@ -1539,6 +1540,31 @@ async function initDb() {
       `;
     }
 
+    // Pricing: Rate (price per unit carton) and Tax % live on the job
+    // itself, additive to the shared jobs table — the tracker just never
+    // reads them. Same "same rate until Hamza changes it" model as
+    // everything else on the job card: set once, stays fixed, editable by
+    // whoever can record deliveries. tax_pct defaults to 18 (Pakistan's
+    // standard sales tax rate) so a job with no explicit override still
+    // has a sane figure.
+    await sql`ALTER TABLE jobs ADD COLUMN IF NOT EXISTS rate    NUMERIC`;
+    await sql`ALTER TABLE jobs ADD COLUMN IF NOT EXISTS tax_pct NUMERIC NOT NULL DEFAULT 18`;
+    // Product Rate table: Hamza maintains one rate per product name here;
+    // any job whose name hasn't been priced yet (rate IS NULL) suggests
+    // this as its default when someone opens the Pricing section — see
+    // GET /api/product-rates and the client's productRateFor(). Editing a
+    // product's rate here never touches an already-priced job — it only
+    // ever changes what NEW (as-yet-unpriced) jobs suggest.
+    await sql`
+      CREATE TABLE IF NOT EXISTS finance.product_rates (
+        id          SERIAL PRIMARY KEY,
+        product     TEXT NOT NULL UNIQUE,
+        rate        NUMERIC NOT NULL,
+        updated_by  TEXT,
+        updated_at  TIMESTAMPTZ DEFAULT NOW()
+      )
+    `;
+
     // Stamp the schema version so future cold starts hit the fast-path
     // short-circuit at the top of initDb instead of replaying every ALTER.
     await sql`
@@ -1858,6 +1884,8 @@ const FINANCE_JOB_WRITES_ALLOWED = [
   ['PATCH',  /^\/api\/jobs\/\d+\/stage$/, body => !!body
     && Number.isInteger(body.stage_index)
     && body.stage_index >= READY_TO_DELIVER_INDEX],
+  // Set a job's Rate / Tax % (route checks delivery_write)
+  ['PATCH',  /^\/api\/jobs\/\d+\/pricing$/],
 ];
 app.use((req, res, next) => {
   if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') return next();
@@ -6231,7 +6259,7 @@ async function nextShadeCardDcNumber(sql) {
 // delivery endpoint and the Linked-Jobs joint delivery endpoint so the
 // two never drift out of sync (auto-advance-to-Delivered logic identical
 // in both places).
-function computeDeliveryUpdate(job, { cartonsN, date, notes, poNo, batchNo, linkedJobId, byEmail }) {
+function computeDeliveryUpdate(job, { cartonsN, date, notes, poNo, batchNo, fbrNo, linkedJobId, byEmail }) {
   const bookedQty  = parseFloat(String(job.qty || '').replace(/[^0-9.\-]/g, '')) || 0;
   const priorTotal = sumDeliveryCartons(job.deliveries);
   const nextTotal  = priorTotal + cartonsN;
@@ -6240,6 +6268,7 @@ function computeDeliveryUpdate(job, { cartonsN, date, notes, poNo, batchNo, link
     date, notes,
     po_no: poNo,
     batch_no: batchNo,
+    fbr_no: fbrNo || null,
     by: byEmail || 'unknown',
     at: new Date().toISOString(),
     linked_job_id: linkedJobId || null,
@@ -6308,6 +6337,7 @@ app.post('/api/jobs/:id/deliveries', requireDeliveryWriter, async (req, res) => 
     let notes     = String(req.body.notes   ?? '').trim() || null;
     const poNo    = String(req.body.po_no    ?? '').trim() || null;
     const batchNo = String(req.body.batch_no ?? '').trim() || null;
+    const fbrNo   = String(req.body.fbr_no   ?? '').trim() || null;
     const cartonsN = parseFloat(cartons.replace(/[^0-9.\-]/g, ''));
     if (!Number.isFinite(cartonsN) || cartonsN <= 0) {
       return res.status(400).json({ error: 'Delivery cartons must be a positive number.' });
@@ -6335,7 +6365,7 @@ app.post('/api/jobs/:id/deliveries', requireDeliveryWriter, async (req, res) => 
     // request). Recording reality is the priority; the tile just shows
     // the running total against the booked qty for context.
     const { deliveries, delqty, stage_index, stages, log, entry, nextTotal, bookedQty } =
-      computeDeliveryUpdate(job, { cartonsN, date, notes, poNo, batchNo, byEmail: req.user?.email });
+      computeDeliveryUpdate(job, { cartonsN, date, notes, poNo, batchNo, fbrNo, byEmail: req.user?.email });
     const updated = await sql`
       UPDATE jobs
          SET deliveries  = ${JSON.stringify(deliveries)},
@@ -6552,7 +6582,7 @@ app.post('/api/groups/deliver', requireDeliveryWriter, async (req, res) => {
   try {
     await dbReady;
     const sql = getDb();
-    const { group_name, cartons: cartonsRaw, date, notes, po_no, batch_no } = req.body || {};
+    const { group_name, cartons: cartonsRaw, date, notes, po_no, batch_no, fbr_no } = req.body || {};
     if (!group_name || !String(group_name).trim()) return res.status(400).json({ error: 'group_name required' });
     const totalCartons = parseFloat(String(cartonsRaw || '').replace(/[^0-9.\-]/g, ''));
     if (!Number.isFinite(totalCartons) || totalCartons <= 0) return res.status(400).json({ error: 'cartons must be a positive number' });
@@ -6560,6 +6590,7 @@ app.post('/api/groups/deliver', requireDeliveryWriter, async (req, res) => {
     const poNo     = String(po_no    || '').trim() || null;
     const batchNo  = String(batch_no || '').trim() || null;
     const notesStr = String(notes    || '').trim() || null;
+    const fbrNo    = String(fbr_no   || '').trim() || null;
     const byEmail  = req.user?.email || 'unknown';
     const groupJobs = await sql`
       SELECT * FROM jobs
@@ -6580,7 +6611,7 @@ app.post('/api/groups/deliver', requireDeliveryWriter, async (req, res) => {
       const allocate = Math.min(available, remaining);
       remaining -= allocate;
       const { deliveries, delqty, stage_index, stages, log } = computeDeliveryUpdate(job, {
-        cartonsN: allocate, date: delivDate, notes: notesStr, poNo, batchNo, byEmail,
+        cartonsN: allocate, date: delivDate, notes: notesStr, poNo, batchNo, fbrNo, byEmail,
       });
       await sql`
         UPDATE jobs
@@ -6599,6 +6630,122 @@ app.post('/api/groups/deliver', requireDeliveryWriter, async (req, res) => {
       summary: `FIFO delivery from group "${group_name}": ${fulfilled} cartons across ${deliveriesMade.length} job(s)${remaining > 0 ? ` — ${remaining} unfulfilled` : ''}`,
     });
     res.json({ ok: true, deliveries_made: deliveriesMade, unfulfilled: remaining });
+  } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
+});
+
+// ── Pricing (Supreme Art Finance only) ──────────────────────────
+// Rate (price per unit carton) and Tax % on a job — set once, stays fixed
+// until whoever can record deliveries changes it (same model as everything
+// else on the job card). Uses requireDeliveryWriter, same capability that
+// already gates recording a delivery, rather than a brand-new permission
+// key — the Access Register has no row wired to any key this app actually
+// checks (job_write/job_delete/delivery_write included), so a new key
+// would be permanently ungrantable until that's fixed separately.
+app.patch('/api/jobs/:id/pricing', requireDeliveryWriter, async (req, res) => {
+  try {
+    await dbReady;
+    const sql = getDb();
+    const id = parseInt(req.params.id, 10);
+    const rateRaw = req.body?.rate;
+    const taxRaw  = req.body?.tax_pct;
+    const rate = (rateRaw === null || rateRaw === undefined || rateRaw === '') ? null : Number(rateRaw);
+    if (rate !== null && (!Number.isFinite(rate) || rate < 0)) {
+      return res.status(400).json({ error: 'Rate must be a non-negative number.' });
+    }
+    const taxPct = Number(taxRaw);
+    if (!Number.isFinite(taxPct) || taxPct < 0) {
+      return res.status(400).json({ error: 'Tax % must be a non-negative number.' });
+    }
+    const rows = await sql`SELECT id, name, rate, tax_pct FROM jobs WHERE id = ${id} AND deleted_at IS NULL`;
+    if (!rows.length) return res.status(404).json({ error: 'Job not found' });
+    const updated = await sql`
+      UPDATE jobs SET rate = ${rate}, tax_pct = ${taxPct}
+       WHERE id = ${id}
+       RETURNING *
+    `;
+    await logAudit(sql, req, {
+      action: 'job.pricing.update',
+      entityType: 'job',
+      entityId: id,
+      summary: `Job E-${id} pricing set: rate ${rate === null ? '—' : rate}, tax ${taxPct}%`,
+      metadata: { rate, tax_pct: taxPct, prior_rate: rows[0].rate, prior_tax_pct: rows[0].tax_pct },
+    });
+    res.json(updated[0]);
+  } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
+});
+
+// ── Product Rate table (Supreme Art Finance only) ────────────────
+// Hamza's own list of product → default rate. A job whose rate hasn't
+// been set yet suggests the matching product's rate (by job name, case-
+// insensitive) — see the client's productRateFor(). Editing a product's
+// rate here never touches a job that's already been priced.
+app.get('/api/product-rates', requireAuth, async (req, res) => {
+  try {
+    await dbReady;
+    const sql = getDb();
+    const rows = await sql`SELECT * FROM finance.product_rates ORDER BY product ASC`;
+    res.json(rows);
+  } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
+});
+app.post('/api/product-rates', requireDeliveryWriter, async (req, res) => {
+  try {
+    await dbReady;
+    const sql = getDb();
+    const product = String(req.body?.product ?? '').trim();
+    const rate = Number(req.body?.rate);
+    if (!product) return res.status(400).json({ error: 'Product name is required.' });
+    if (!Number.isFinite(rate) || rate < 0) return res.status(400).json({ error: 'Rate must be a non-negative number.' });
+    const existing = await sql`SELECT id FROM finance.product_rates WHERE lower(product) = lower(${product})`;
+    if (existing.length) return res.status(409).json({ error: `"${product}" already has a rate — edit it instead of adding a duplicate.` });
+    const inserted = await sql`
+      INSERT INTO finance.product_rates (product, rate, updated_by, updated_at)
+      VALUES (${product}, ${rate}, ${req.user.email}, NOW())
+      RETURNING *
+    `;
+    await logAudit(sql, req, {
+      action: 'product_rate.create', entityType: 'product_rate', entityId: inserted[0].id,
+      summary: `Product Rate added: "${product}" = ${rate}`,
+    });
+    res.json(inserted[0]);
+  } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
+});
+app.put('/api/product-rates/:id', requireDeliveryWriter, async (req, res) => {
+  try {
+    await dbReady;
+    const sql = getDb();
+    const id = parseInt(req.params.id, 10);
+    const product = String(req.body?.product ?? '').trim();
+    const rate = Number(req.body?.rate);
+    if (!product) return res.status(400).json({ error: 'Product name is required.' });
+    if (!Number.isFinite(rate) || rate < 0) return res.status(400).json({ error: 'Rate must be a non-negative number.' });
+    const dupe = await sql`SELECT id FROM finance.product_rates WHERE lower(product) = lower(${product}) AND id != ${id}`;
+    if (dupe.length) return res.status(409).json({ error: `"${product}" already has a rate on a different row.` });
+    const updated = await sql`
+      UPDATE finance.product_rates
+         SET product = ${product}, rate = ${rate}, updated_by = ${req.user.email}, updated_at = NOW()
+       WHERE id = ${id}
+       RETURNING *
+    `;
+    if (!updated.length) return res.status(404).json({ error: 'Product Rate row not found' });
+    await logAudit(sql, req, {
+      action: 'product_rate.update', entityType: 'product_rate', entityId: id,
+      summary: `Product Rate updated: "${product}" = ${rate}`,
+    });
+    res.json(updated[0]);
+  } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
+});
+app.delete('/api/product-rates/:id', requireDeliveryWriter, async (req, res) => {
+  try {
+    await dbReady;
+    const sql = getDb();
+    const id = parseInt(req.params.id, 10);
+    const deleted = await sql`DELETE FROM finance.product_rates WHERE id = ${id} RETURNING *`;
+    if (!deleted.length) return res.status(404).json({ error: 'Product Rate row not found' });
+    await logAudit(sql, req, {
+      action: 'product_rate.delete', entityType: 'product_rate', entityId: id,
+      summary: `Product Rate removed: "${deleted[0].product}"`,
+    });
+    res.json({ ok: true });
   } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
 });
 
@@ -6966,12 +7113,14 @@ app.post('/api/jobs/:id/deliver-linked', requireDeliveryWriter, async (req, res)
       cartonsN: cartonsA, date, notes: challanNo,
       poNo: String(eA.po_no ?? '').trim() || null,
       batchNo: String(eA.batch_no ?? '').trim() || null,
+      fbrNo: String(eA.fbr_no ?? '').trim() || null,
       linkedJobId: partnerId, byEmail,
     });
     const updB = computeDeliveryUpdate(jobB, {
       cartonsN: cartonsB, date, notes: challanNo,
       poNo: String(eB.po_no ?? '').trim() || null,
       batchNo: String(eB.batch_no ?? '').trim() || null,
+      fbrNo: String(eB.fbr_no ?? '').trim() || null,
       linkedJobId: id, byEmail,
     });
     const [rowA] = await sql`
