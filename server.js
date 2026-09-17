@@ -1789,24 +1789,42 @@ app.use(authMiddleware);
 // Jobs are view-only in Supreme Art Finance. Every change to a job, a job
 // group or a MIL stock group is refused here, before any route runs —
 // Super Admin included — so no button in this app, hidden or not, can
-// change the tracker's job data. The only writes let through are recording
-// and removing deliveries (delivery recording moved to this app; those
-// routes still check delivery_write / delivery_delete themselves) and the
-// print stamp. Wastage Adjustment lives under /api/wastage-adjustment and
-// is unaffected.
+// change the tracker's job data. Only the writes listed below get through,
+// each matched on method AND path (a PUT to /api/jobs/5 is still refused
+// even though DELETE to the same path is allowed), and each route still runs
+// its own permission check afterwards. Wastage Adjustment lives under
+// /api/wastage-adjustment and is unaffected.
+const LAST_STAGE_INDEX = STAGES.length - 1;
 const FINANCE_JOB_WRITES_ALLOWED = [
-  /^\/api\/jobs\/\d+\/deliveries$/,         // POST   record a delivery
-  /^\/api\/jobs\/\d+\/deliveries\/\d+$/,  // DELETE remove a delivery entry
-  /^\/api\/jobs\/\d+\/deliver-linked$/,     // POST   joint delivery with a linked job
-  /^\/api\/groups\/deliver$/,                 // POST   MIL group delivery
-  /^\/api\/jobs\/\d+\/printed$/,            // POST   print counter (printing is viewing)
+  // Deliveries — recording moved to this app (route checks delivery_write / delivery_delete)
+  ['POST',   /^\/api\/jobs\/\d+\/deliveries$/],          // record a delivery
+  ['DELETE', /^\/api\/jobs\/\d+\/deliveries\/\d+$/],     // remove a delivery entry
+  ['POST',   /^\/api\/jobs\/\d+\/deliver-linked$/],      // joint delivery with a linked job
+  ['POST',   /^\/api\/groups\/deliver$/],                // MIL group delivery
+  // Print counter (printing is viewing)
+  ['POST',   /^\/api\/jobs\/\d+\/printed$/],
+  // Link / Unlink two job cards (route checks job_write)
+  ['POST',   /^\/api\/jobs\/\d+\/link$/],
+  ['POST',   /^\/api\/jobs\/\d+\/unlink$/],
+  // Delete a job — a soft delete into the tracker's Archive (route checks job_delete)
+  ['DELETE', /^\/api\/jobs\/\d+$/],
+  // Finalize as Delivered (route checks job_write). It uses the general stage
+  // route, so only a request that IS a finalize gets through: moving to the
+  // last stage, stamped done + finalized. Any other stage move stays refused.
+  ['PATCH',  /^\/api\/jobs\/\d+\/stage$/, body => !!body
+    && body.stage_index === LAST_STAGE_INDEX
+    && !!body.stages && !!body.stages[LAST_STAGE_INDEX]
+    && body.stages[LAST_STAGE_INDEX].status === 'done'
+    && body.stages[LAST_STAGE_INDEX].finalized === true],
 ];
 app.use((req, res, next) => {
   if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') return next();
   // Case-insensitive: Express routes match case-insensitively by default, so
   // /API/JOBS/5 reaches the same handler as /api/jobs/5 and must be caught too.
   if (!/^\/api\/(jobs|groups|stock-groups)(\/|$)/i.test(req.path)) return next();
-  if (FINANCE_JOB_WRITES_ALLOWED.some(re => re.test(req.path))) return next();
+  const allowed = FINANCE_JOB_WRITES_ALLOWED.some(([method, re, bodyOk]) =>
+    req.method === method && re.test(req.path) && (!bodyOk || bodyOk(req.body)));
+  if (allowed) return next();
   return res.status(403).json({ error: 'Jobs are view-only in Supreme Art Finance. Make this change in the Job Tracker.' });
 });
 
