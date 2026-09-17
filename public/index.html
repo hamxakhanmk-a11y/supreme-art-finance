@@ -4233,6 +4233,15 @@ function canFinalizeDelivery() { return hasJobWritePermission(); }
 // otherwise read-only. Every delivery button / form uses this instead of
 // canWriteJobs.
 function canRecordDelivery() { return isSuperAdmin() || hasPerm('delivery_write'); }
+// Stage forwarding (the pipeline dots / moveToStage) is closed in this app
+// through Pasting — that's tracker production territory. Ready to Deliver
+// and Delivered stay open to finance too, since moving a job into either of
+// those two is the delivery side of the job, which finance owns here.
+// Server mirrors this exactly (requireStageForwardWriter).
+const STAGE_FORWARD_OPEN_FROM = STAGES.indexOf('Ready to Deliver');
+function canForwardStage(target) {
+  return hasJobWritePermission() || (target >= STAGE_FORWARD_OPEN_FROM && canRecordDelivery());
+}
 function canWriteInventory() { return isSuperAdmin() || hasPerm('inventory_write'); }
 // Station is a PIN-gated shop-floor terminal. CEO gets in like everyone
 // else with a PIN and sees the whole queue + update screens for that
@@ -22424,16 +22433,24 @@ async function moveToStage(id, target) {
   const j = jobs.find(x=>x.id===id);
   if (!j) return;
   // The pipeline pills themselves render unconditionally for every role —
-  // only the server (requireJobsWriter) actually rejects a non-writer's
-  // move. Guard here too so a non-writer gets a clear message instead of
-  // an unexplained failed request.
-  if (!canWriteJobs()) { notify('Jobs are view-only in Supreme Art Finance — make this change in the Job Tracker.'); return; }
+  // only the server (requireStageForwardWriter) actually rejects a
+  // non-writer's move. Guard here too so a non-writer gets a clear message
+  // instead of an unexplained failed request. Stage forwarding is closed in
+  // this app through Pasting (target < Ready to Deliver needs job_write);
+  // Ready to Deliver and Delivered stay open to finance too — see
+  // canForwardStage().
+  if (!canForwardStage(target)) {
+    notify(target < STAGE_FORWARD_OPEN_FROM
+      ? 'Jobs are view-only in Supreme Art Finance — make this change in the Job Tracker.'
+      : "You don't have permission to move this job forward.");
+    return;
+  }
   // Special-case: from Pending Stock, allow moving BACK to CTP (undo an
   // accidental Process to Printing). Runs its own endpoint that flips
   // issuance_status back to 'ctp' AND clears the stale Printing stage
   // entry, so the job pops back into the CTP tab cleanly.
   if (target === 0 && j.issuance_status === 'pending' && (j.stage_index || 0) <= 1) {
-    if (!canWriteJobs()) { notify('Jobs are view-only in Supreme Art Finance — make this change in the Job Tracker.'); return; }
+    if (!canForwardStage(target)) { notify('Jobs are view-only in Supreme Art Finance — make this change in the Job Tracker.'); return; }
     const ok = await confirmDialog({
       title: `Move Job E-${id} back to CTP?`,
       message: `"${j.name}" will leave Pending Stock and return to the CTP queue for more plate work.`,
@@ -26134,7 +26151,7 @@ function renderUsersTab() {
           ? `<span class="inv-badge" style="text-transform:uppercase;font-size:10px;letter-spacing:0.04em;background:var(--bg2);color:var(--text2);padding:4px 10px;border-radius:10px;">${esc(visibleRolesOf(u).map(roleLabel).join(' + '))}${u.client_company ? ' · '+esc(u.client_company) : ''}</span>`
           : `<div class="user-role-checks" data-uid="${u.id}" style="display:flex;flex-direction:column;gap:4px;max-width:300px;">
               <div style="display:flex;flex-wrap:wrap;gap:4px 10px;">
-                ${(isSuperAdmin() ? [['super_admin','Super Admin']] : []).concat([['finance','Finance'],['procurement','Procurement']]).map(([r,lbl]) => `
+                ${(isSuperAdmin() ? [['super_admin','Super Admin']] : []).concat([['admin','Admin'],['ceo','CEO'],['finance','Finance'],['procurement','Procurement']]).map(([r,lbl]) => `
                   <label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;white-space:nowrap;">
                     <input type="checkbox" value="${r}" ${userRolesOf(u).includes(r)?'checked':''}
                            ${isMe && (r==='admin' || r==='super_admin') ? 'disabled' : ''}
@@ -26373,7 +26390,7 @@ async function cycleRolePermission(key, role) {
 
 // Column order for every row — this app's roles only. Super Admin stays
 // locked (always full access); Finance and Procurement are editable.
-const COLUMN_ROLES = ['super_admin', 'finance', 'procurement'];
+const COLUMN_ROLES = ['super_admin', 'admin', 'ceo', 'finance', 'procurement'];
 // Rows where every role except Super Admin is force-locked to HIDDEN,
 // no matter what's saved in the DB — currently just the Access Register
 // row itself, so no role can ever grant itself (or another role) a way
@@ -26411,6 +26428,8 @@ function renderAccessRegisterHtml(matrixData) {
             <tr>
               <th>Capability</th>
               <th>Super<br>Admin</th>
+              <th>Admin</th>
+              <th>CEO</th>
               <th>Finance</th>
               <th>Procurement</th>
             </tr>
@@ -26439,7 +26458,7 @@ function openInviteUser() {
     <div class="form-group"><label class="form-label">Email *</label><input type="email" id="invite-email" placeholder="someone@gmail.com"></div>
     <div class="form-group"><label class="form-label">Roles <span style="font-weight:400;color:var(--text2);">(pick one or more — access combines)</span></label>
       <div id="invite-roles" style="display:flex;flex-direction:column;gap:6px;">
-        ${(isSuperAdmin() ? [['super_admin','Super Admin',false]] : []).concat([['finance','Finance',true],['procurement','Procurement',false]]).map(([r,lbl,def]) => `
+        ${(isSuperAdmin() ? [['super_admin','Super Admin',false]] : []).concat([['admin','Admin',false],['ceo','CEO',false],['finance','Finance',true],['procurement','Procurement',false]]).map(([r,lbl,def]) => `
           <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;">
             <input type="checkbox" value="${r}" ${def?'checked':''} onchange="onInviteRolesChanged()"> ${lbl}
           </label>`).join('')}

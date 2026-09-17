@@ -268,7 +268,12 @@ function getDb() {
 // Bumped for the finance schema: finance.users / finance.sessions /
 // finance.audit_log — this app's own sign-in list, separate from the tracker's.
 // Bumped again for finance.role_permissions and the Procurement role.
-const SCHEMA_VERSION = 'v2026-09-16-finance-procurement';
+// Bumped again to add Admin and CEO as finance.users sign-in roles: widens
+// fin_users_role_check / fin_users_roles_check, and copies their permission
+// levels from the tracker's register (finance_role_permissions_admin_ceo_
+// from_tracker_v1) — a DB already stamped with an earlier version would
+// otherwise hit the fast-path and never widen the CHECK or run that copy.
+const SCHEMA_VERSION = 'v2026-09-17-finance-admin-ceo';
 
 // This app shares its Neon database with the Job Tracker app (it started as
 // a copy of it). Both run initDb() at boot, so they must NOT share the one
@@ -298,7 +303,7 @@ const SCHEMA_VERSION_KEY = 'schema_version_finance';
 // Finance's Access Register covers exactly these roles (Super Admin always
 // has everything and isn't editable). Declared before initDb runs, since
 // initDb seeds finance.role_permissions for them.
-const FINANCE_PERMISSION_ROLES = ['finance', 'procurement'];
+const FINANCE_PERMISSION_ROLES = ['admin', 'ceo', 'finance', 'procurement'];
 
 const ROLE_PERMISSION_DEFAULTS = {
   job_write:            { label: 'Create, edit/save, move, duplicate, link/unlink, block/unblock a job, or manage a MIL group', levels: { admin: 'yes', production_manager: 'yes' } },
@@ -1440,11 +1445,16 @@ async function initDb() {
     await sql`CREATE INDEX IF NOT EXISTS fin_audit_log_entity_idx ON finance.audit_log(entity_type, entity_id)`;
     await sql`CREATE INDEX IF NOT EXISTS fin_audit_log_user_idx   ON finance.audit_log(user_id)`;
 
-    // Procurement joins Finance and Super Admin as a sign-in role. Postgres
+    // Sign-in roles: Super Admin, Admin, CEO, Finance, Procurement. Postgres
     // auto-named the inline CHECKs from CREATE TABLE above, so rather than
     // guess those names, drop every CHECK on finance.users and re-add both
     // under names we own — in one DO block, so the table lock serializes any
     // two cold starts racing this and each run ends in the same state.
+    // Admin no longer requires super_admin alongside it (that restriction
+    // made sense only while 'admin' was purely an internal flag riding on
+    // Super Admin; Admin is now its own standalone invite-able role, same
+    // as CEO) — Super Admin still always carries 'admin' too, enforced in
+    // parseRolesInput, not by this CHECK.
     await sql`
       DO $$
       DECLARE c record;
@@ -1454,11 +1464,10 @@ async function initDb() {
           EXECUTE format('ALTER TABLE finance.users DROP CONSTRAINT %I', c.conname);
         END LOOP;
         ALTER TABLE finance.users ADD CONSTRAINT fin_users_role_check
-          CHECK (role IN ('super_admin','finance','procurement'));
+          CHECK (role IN ('super_admin','admin','ceo','finance','procurement'));
         ALTER TABLE finance.users ADD CONSTRAINT fin_users_roles_check
           CHECK (cardinality(roles) >= 1
-                 AND roles <@ ARRAY['super_admin','admin','finance','procurement']::text[]
-                 AND (NOT ('admin' = ANY(roles)) OR 'super_admin' = ANY(roles)));
+                 AND roles <@ ARRAY['super_admin','admin','ceo','finance','procurement']::text[]);
       END $$
     `;
 
@@ -1490,6 +1499,21 @@ async function initDb() {
         ON CONFLICT (permission_key, role) DO NOTHING
       `;
       await sql`INSERT INTO schema_meta (key, value) VALUES ('finance_role_permissions_from_tracker_v1', NOW()::TEXT) ON CONFLICT (key) DO NOTHING`;
+    }
+    // Same one-time copy, now for Admin and CEO (added as finance sign-in
+    // roles after the above already ran in production) — a separate marker
+    // so it runs once on its own rather than being skipped because the
+    // original marker is already set.
+    const adminCeoPermsCopied = await sql`SELECT 1 FROM schema_meta WHERE key = 'finance_role_permissions_admin_ceo_from_tracker_v1'`;
+    if (!adminCeoPermsCopied.length) {
+      await sql`
+        INSERT INTO finance.role_permissions (permission_key, role, level, updated_by, updated_at)
+        SELECT permission_key, role, level, 'copied from tracker', NOW()
+          FROM public.role_permissions
+         WHERE role IN ('admin', 'ceo')
+        ON CONFLICT (permission_key, role) DO NOTHING
+      `;
+      await sql`INSERT INTO schema_meta (key, value) VALUES ('finance_role_permissions_admin_ceo_from_tracker_v1', NOW()::TEXT) ON CONFLICT (key) DO NOTHING`;
     }
     // Then fill any permission the copy didn't cover from the code defaults.
     // DO NOTHING keeps every saved level, so this only ever adds new keys.
@@ -1716,6 +1740,25 @@ function requireJobsWriter(req, res, next) {
   }
   next();
 }
+// Supreme Art Finance only: stage forwarding is closed here through
+// Pasting — that's tracker production territory, still job_write-gated
+// exactly like requireJobsWriter above. Ready to Deliver and Delivered
+// (the tail of the pipeline) stay open to finance too, since moving a job
+// into either of those two is the delivery side of the job, which finance
+// owns in this app. Used ONLY on PATCH /api/jobs/:id/stage — every other
+// job_write route (new job, edit, block, process, link, MIL group, …)
+// keeps requireJobsWriter unchanged.
+const READY_TO_DELIVER_INDEX = STAGES.indexOf('Ready to Deliver');
+function requireStageForwardWriter(req, res, next) {
+  if (!req.user) return res.status(401).json({ error: 'Not signed in' });
+  const target = Number(req.body && req.body.stage_index);
+  const allowed = canWriteJobs(req.user)
+    || (Number.isInteger(target) && target >= READY_TO_DELIVER_INDEX && roleHasPermission(req.user, 'delivery_write'));
+  if (!allowed) {
+    return res.status(403).json({ error: 'Not allowed — jobs write access required' });
+  }
+  next();
+}
 // Deliveries — admin, PM, or finance. Finance holds no other job-write
 // role but is the only user allowed to record shipments (which is why it
 // exists as a separate middleware from requireJobsWriter).
@@ -1794,7 +1837,6 @@ app.use(authMiddleware);
 // even though DELETE to the same path is allowed), and each route still runs
 // its own permission check afterwards. Wastage Adjustment lives under
 // /api/wastage-adjustment and is unaffected.
-const LAST_STAGE_INDEX = STAGES.length - 1;
 const FINANCE_JOB_WRITES_ALLOWED = [
   // Deliveries — recording moved to this app (route checks delivery_write / delivery_delete)
   ['POST',   /^\/api\/jobs\/\d+\/deliveries$/],          // record a delivery
@@ -1808,14 +1850,14 @@ const FINANCE_JOB_WRITES_ALLOWED = [
   ['POST',   /^\/api\/jobs\/\d+\/unlink$/],
   // Delete a job — a soft delete into the tracker's Archive (route checks job_delete)
   ['DELETE', /^\/api\/jobs\/\d+$/],
-  // Finalize as Delivered (route checks job_write). It uses the general stage
-  // route, so only a request that IS a finalize gets through: moving to the
-  // last stage, stamped done + finalized. Any other stage move stays refused.
+  // Stage moves — closed through Pasting (tracker production territory);
+  // open from Ready to Deliver onward, which covers both Finalize as
+  // Delivered (job_write) and a plain forward move into Ready to
+  // Deliver / Delivered (job_write OR delivery_write — see
+  // requireStageForwardWriter, the route's own middleware, for who).
   ['PATCH',  /^\/api\/jobs\/\d+\/stage$/, body => !!body
-    && body.stage_index === LAST_STAGE_INDEX
-    && !!body.stages && !!body.stages[LAST_STAGE_INDEX]
-    && body.stages[LAST_STAGE_INDEX].status === 'done'
-    && body.stages[LAST_STAGE_INDEX].finalized === true],
+    && Number.isInteger(body.stage_index)
+    && body.stage_index >= READY_TO_DELIVER_INDEX],
 ];
 app.use((req, res, next) => {
   if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') return next();
@@ -1887,10 +1929,11 @@ app.post('/api/auth/google', async (req, res) => {
     let user = userRows[0];
 
     // No auto-create here (the tracker's BOOTSTRAP_ADMIN path would mint a
-    // bare 'admin', which finance doesn't allow). The owner is seeded by
-    // initDb; everyone else must be added from the Users tab. Being on the
-    // tracker's user list grants nothing in this app.
-    if (!user || !userHasRole(user, 'finance', 'procurement', 'super_admin')) {
+    // bare 'admin' outside our own invite flow, which finance doesn't
+    // allow). The owner is seeded by initDb; everyone else must be added
+    // from the Users tab — including Admin and CEO, which are ordinary
+    // invite-able finance.users roles now, not tracker roles leaking in.
+    if (!user || !userHasRole(user, 'admin', 'ceo', 'finance', 'procurement', 'super_admin')) {
       return res.status(403).json({ error: 'This account does not have access to Supreme Art Finance. Ask a Super Admin to add you.' });
     }
     if (user.blocked_at) {
@@ -2020,20 +2063,27 @@ const ROLE_PRIORITY = ['super_admin', 'admin', 'production_manager', 'store_mana
 // the payload (by tampering with the request, since the checkbox is hidden
 // from them client-side) has it silently stripped here, server-side.
 function parseRolesInput(body, actingUser) {
-  // Finance admits three kinds of account: Super Admin, Finance and
-  // Procurement (roles combine). Tracker roles (admin, PM, store, operator,
-  // CEO, client) are dropped. A Super Admin also carries 'admin' internally
-  // because shared code gates on it; finance.users' CHECK forbids 'admin'
-  // without 'super_admin'.
-  const WORK_ROLES = ['finance', 'procurement'];
+  // Finance admits five kinds of account: Super Admin, Admin, CEO, Finance
+  // and Procurement (roles combine). Every other tracker role (production
+  // manager, store manager, operator, client) is dropped. A Super Admin
+  // also always carries 'admin' — every Super Admin is implicitly an
+  // Admin too, same as in the Job Tracker — enforced below, not by the DB
+  // CHECK (which now allows a standalone Admin with no Super Admin).
+  const INVITE_ROLES = ['admin', 'ceo', 'finance', 'procurement'];
   let roles = normalizeUserRoles(Array.isArray(body.roles) && body.roles.length ? body.roles : body.role)
-    .filter(r => r === 'super_admin' || WORK_ROLES.includes(r));
+    .filter(r => r === 'super_admin' || INVITE_ROLES.includes(r));
   if (roles.includes('super_admin') && !userHasRole(actingUser, 'super_admin')) {
     roles = roles.filter(r => r !== 'super_admin');
   }
   if (!roles.length) roles = ['finance'];
-  if (roles.includes('super_admin')) roles = ['super_admin', 'admin', ...roles.filter(r => WORK_ROLES.includes(r))];
-  const primary = roles.includes('super_admin') ? 'super_admin' : (roles.includes('finance') ? 'finance' : 'procurement');
+  if (roles.includes('super_admin')) {
+    // Rebuild with super_admin + admin first, deduped against whatever the
+    // caller already picked — INVITE_ROLES now includes 'admin', so a
+    // straight concat here would double it when both boxes are checked.
+    roles = ['super_admin', 'admin', ...roles.filter(r => r !== 'super_admin' && r !== 'admin')];
+  }
+  const ROLE_PRIORITY_FINANCE = ['super_admin', 'admin', 'finance', 'ceo', 'procurement'];
+  const primary = ROLE_PRIORITY_FINANCE.find(r => roles.includes(r)) || 'finance';
   return { roles, primary };
 }
 
@@ -8570,7 +8620,7 @@ app.post('/api/imports/:id/receive', requireInventoryWriter, async (req, res) =>
 });
 
 // UPDATE stage/status only
-app.patch('/api/jobs/:id/stage', requireJobsWriter, async (req, res) => {
+app.patch('/api/jobs/:id/stage', requireStageForwardWriter, async (req, res) => {
   try {
     await dbReady;
     const sql = getDb();
