@@ -4212,12 +4212,22 @@ function isClient()            { return hasRole('client'); }
 // delivery is separate (canRecordDelivery below) and stays available. The
 // server enforces the same rule (see the jobs view-only guard in server.js).
 function canWriteJobs()      { return false; }
+// The underlying job_write permission, independent of the view-only
+// override above. Drives the three restored actions below AND the
+// role-lock-jobs CSS class (see renderUserChip) — that class blanket-hides
+// every .ceo-hide button in #jobs-mode (Record Delivery's finance-allow
+// escape hatch, Link Job, Unlink), so it must track who the Job Tracker
+// actually grants job_write, not the always-false canWriteJobs() above.
+// Using canWriteJobs() there was the 2026-09-17 bug: it made role-lock-jobs
+// fire for EVERY role including Super Admin, hiding Record Delivery and
+// Link Job for everyone except Finance's narrow escape hatch.
+function hasJobWritePermission() { return isSuperAdmin() || hasPerm('job_write'); }
 // The three job actions that stay available here anyway. Each keeps the
 // permission it has in the Job Tracker, and the server checks the same one,
 // so by default only Super Admin gets them.
 function canDeleteJobs()       { return isSuperAdmin() || hasPerm('job_delete'); }
-function canLinkJobs()         { return isSuperAdmin() || hasPerm('job_write'); }
-function canFinalizeDelivery() { return isSuperAdmin() || hasPerm('job_write'); }
+function canLinkJobs()         { return hasJobWritePermission(); }
+function canFinalizeDelivery() { return hasJobWritePermission(); }
 // Delivery ledger — admin, PM, or finance by default. Finance is the only
 // role that can write only this narrow slice of the job while being
 // otherwise read-only. Every delivery button / form uses this instead of
@@ -4524,7 +4534,7 @@ function renderUserChip() {
   // and inventory-side role keeps write access to both. Lock Jobs writes
   // only when the user can VIEW jobs but not write them; likewise Inventory.
   // (CEO/operator read-only is handled by their own body classes above.)
-  const lockJobs = !isCeo() && !op && !canWriteJobs();
+  const lockJobs = !isCeo() && !op && !hasJobWritePermission();
   const lockInventory = !isCeo() && !op && !canWriteInventory();
   document.body.classList.toggle('role-lock-jobs', lockJobs);
   document.body.classList.toggle('role-lock-inventory', lockInventory);
