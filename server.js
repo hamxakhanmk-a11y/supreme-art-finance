@@ -7412,13 +7412,12 @@ app.delete('/api/jobs/:id/deliveries/:index', requirePermission('delivery_delete
 });
 
 // Edit one already-recorded delivery entry's reference fields — PO No.,
-// Batch No., E-FBR No., Invoice No., MSI No. Deliberately does NOT touch
-// cartons or date: those drive delqty/stage-completion (see
-// computeDeliveryUpdate/the DELETE route above), and re-deriving that from
-// an in-place edit is a separate, riskier piece of work nobody's asked for
-// yet — this route is scoped to the reference fields only. Used by both
-// the job card's Deliveries ledger (inline-editable per Hamza's request)
-// and the Sale Report table.
+// Batch No., E-FBR No., Invoice No., MSI No. — or, per Hamza's follow-up
+// request, the cartons figure itself. Editing cartons re-runs the same
+// delqty/stage-completion recompute computeDeliveryUpdate does on create
+// (and the DELETE route does on removal), since the entry's own cartons
+// value is what those derive from. Used by both the job card's Deliveries
+// ledger (inline-editable) and the Sale Report table.
 app.patch('/api/jobs/:id/deliveries/:index', requireDeliveryWriter, async (req, res) => {
   try {
     await dbReady;
@@ -7430,11 +7429,63 @@ app.patch('/api/jobs/:id/deliveries/:index', requireDeliveryWriter, async (req, 
     const job = rows[0];
     const list = Array.isArray(job.deliveries) ? [...job.deliveries] : [];
     if (ix < 0 || ix >= list.length) return res.status(400).json({ error: 'Delivery index out of range' });
-    const FIELDS = { po_no: 'po_no', batch_no: 'batch_no', fbr_no: 'fbr_no', notes: 'notes', msi_no: 'msi_no' };
+    const FIELDS = { po_no: 'po_no', batch_no: 'batch_no', fbr_no: 'fbr_no', notes: 'notes', msi_no: 'msi_no', cartons: 'cartons' };
     const field = FIELDS[req.body?.field];
-    if (!field) return res.status(400).json({ error: 'field must be one of: po_no, batch_no, fbr_no, notes, msi_no' });
-    const value = String(req.body?.value ?? '').trim() || null;
+    if (!field) return res.status(400).json({ error: 'field must be one of: po_no, batch_no, fbr_no, notes, msi_no, cartons' });
     const before = list[ix];
+
+    if (field === 'cartons') {
+      const cartonsN = parseFloat(String(req.body?.value ?? '').replace(/[^0-9.\-]/g, ''));
+      if (!Number.isFinite(cartonsN) || cartonsN <= 0) {
+        return res.status(400).json({ error: 'Cartons must be a positive number.' });
+      }
+      list[ix] = { ...before, cartons: String(cartonsN) };
+      const totalCartons = sumDeliveryCartons(list);
+      const bookedQty = parseFloat(String(job.qty || '').replace(/[^0-9.\-]/g, '')) || 0;
+      const nowIso = new Date().toISOString();
+      const time   = businessStamp();
+      const by     = req.user?.email || 'unknown';
+      let stage_index = job.stage_index || 0;
+      let stages = (job.stages && typeof job.stages === 'object') ? { ...job.stages } : {};
+      let log = Array.isArray(job.log) ? [...job.log] : [];
+      // Same forward/back rules as computeDeliveryUpdate (create) and the
+      // DELETE route (remove) — an edit can cross the completion threshold
+      // in either direction, so both are handled here.
+      const deliveryComplete = bookedQty ? totalCartons >= bookedQty : totalCartons > 0;
+      if (deliveryComplete && stage_index < 7) {
+        stages[6] = { ...(stages[6] || {}), status: 'done', by, time, at: nowIso };
+        stages[7] = { status: 'done', notes: '', by, time, at: nowIso };
+        stage_index = 7;
+      } else if (!deliveryComplete && stage_index === 7) {
+        stages[7] = { ...(stages[7] || {}), status: 'active' };
+        stages[6] = { ...(stages[6] || {}), status: 'active', by, time, at: nowIso };
+        delete stages[7];
+        stage_index = 6;
+      }
+      log.push({ stage: STAGES[stage_index], status: stages[stage_index]?.status || 'active',
+        notes: `Delivery entry #${ix + 1} cartons edited: ${before.cartons || '0'} → ${cartonsN}`,
+        by: `${by} (${STAGES[stage_index] || '?'})`, time });
+      const updated = await sql`
+        UPDATE jobs
+           SET deliveries  = ${JSON.stringify(list)},
+               delqty      = ${totalCartons ? String(totalCartons) : null},
+               stage_index = ${stage_index},
+               stages      = ${JSON.stringify(stages)},
+               log         = ${JSON.stringify(log)}
+         WHERE id = ${id}
+         RETURNING *
+      `;
+      await logAudit(sql, req, {
+        action: 'job.delivery.edit',
+        entityType: 'job',
+        entityId: id,
+        summary: `Job E-${id} delivery #${ix + 1}: cartons "${before.cartons || ''}" → "${cartonsN}"`,
+        metadata: { index: ix, field: 'cartons', before: before.cartons || null, after: String(cartonsN) },
+      });
+      return res.json(updated[0]);
+    }
+
+    const value = String(req.body?.value ?? '').trim() || null;
     list[ix] = { ...before, [field]: value };
     const updated = await sql`
       UPDATE jobs SET deliveries = ${JSON.stringify(list)}

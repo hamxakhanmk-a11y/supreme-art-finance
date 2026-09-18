@@ -12449,12 +12449,29 @@ function printJobsReport() {
 // bulk-select/created-mode toggle. Gated by delivery_write, same as
 // Company Settings and the Product Rate tab — this is the one report that
 // shows pricing.
-const saleReportState = loadPersistedFilters('sale-report', { client: '', dateRange: '', dfrom: '', dto: '', q: '', type: '', sortBy: 'id', sortDir: 'asc', poSearch: '', challanSearch: '', milOnly: false, colFilters: { paper: [], machine: [], coatings: [], rate: [] } });
+const saleReportState = loadPersistedFilters('sale-report', { client: '', dateRange: '', dfrom: '', dto: '', q: '', type: '', sortBy: 'id', sortDir: 'asc', poSearch: '', challanSearch: '', milOnly: false, colFilters: { paper: [], machine: [], coatings: [], rate: [] }, colFiltersSetAt: {} });
 // A saved object from an older version of this app might be missing
 // colFilters entirely (loadPersistedFilters merges top-level keys only) —
 // backfill it so every column filter function can assume it exists.
 if (!saleReportState.colFilters) saleReportState.colFilters = { paper: [], machine: [], coatings: [], rate: [] };
 for (const k of ['paper', 'machine', 'coatings', 'rate']) if (!Array.isArray(saleReportState.colFilters[k])) saleReportState.colFilters[k] = [];
+if (!saleReportState.colFiltersSetAt || typeof saleReportState.colFiltersSetAt !== 'object') saleReportState.colFiltersSetAt = {};
+// Hamza asked column filters to "reset after some time" so a forgotten
+// filter doesn't silently keep hiding rows — 30 minutes of a column
+// filter being active auto-clears it on the next render.
+const SR_COL_FILTER_TTL_MS = 30 * 60 * 1000;
+function srExpireColFilters() {
+  const now = Date.now();
+  let changed = false;
+  for (const k of Object.keys(saleReportState.colFiltersSetAt)) {
+    if (now - saleReportState.colFiltersSetAt[k] > SR_COL_FILTER_TTL_MS) {
+      saleReportState.colFilters[k] = [];
+      delete saleReportState.colFiltersSetAt[k];
+      changed = true;
+    }
+  }
+  if (changed) _persistSr();
+}
 
 function openSaleReportPage() {
   if (!hasPerm('rpt_sale_report', 'view')) { notify('Sale Report is not available for your role.'); return; }
@@ -12613,6 +12630,7 @@ function buildSaleReportRows() {
   const bounds = resolveDateFilterBounds(dateRange, dfrom, dto);
   const out = [];
   for (const j of jobs) {
+    if (j.is_shade_card) continue; // Shade cards don't get invoiced like Sale Report's other jobs — Hamza's call 2026-09-18.
     const deliveriesList = Array.isArray(j.deliveries) ? j.deliveries : [];
     if (!deliveriesList.length) continue;
     if (client && j.client !== client) continue;
@@ -12753,31 +12771,59 @@ function saleReportColHeaderHtml(field, label) {
   const active = (saleReportState.colFilters[field] || []).length > 0;
   return `${esc(label)} <button type="button" onclick="event.stopPropagation(); saleReportColFilterModal('${field}')" title="Filter ${esc(label)}" style="background:none;border:none;cursor:pointer;padding:0 0 0 2px;font-size:11px;line-height:1;vertical-align:middle;color:${active ? '#166534' : 'var(--text2)'};font-weight:${active ? '900' : '400'};">&#9660;</button>`;
 }
+// Excel-style checkbox row — green background while checked, same "this
+// one's selected" signal as a spreadsheet's own filter picker.
+function _srcfRowHtml(o, checked) {
+  return `<label class="srcf-opt-row" data-text="${esc(o.toLowerCase())}" style="display:flex;align-items:center;gap:8px;padding:5px 6px;font-size:13px;border-radius:5px;cursor:pointer;${checked ? 'background:#bbf7d0;' : ''}">
+    <input type="checkbox" class="srcf-opt" value="${esc(o)}" ${checked ? 'checked' : ''} onchange="srColFilterOptChanged(this)">
+    ${esc(o)}
+  </label>`;
+}
 function saleReportColFilterModal(field) {
   const options = saleReportColumnOptions(field);
   const selected = saleReportState.colFilters[field] || [];
   const label = SALE_REPORT_COL_LABELS[field] || field;
   openModal(`<div class="modal" onclick="event.stopPropagation()" style="max-width:420px;">
     <h2 style="margin:0 0 10px;font-size:16px;">Filter: ${esc(label)}</h2>
-    ${options.length ? `<div style="max-height:50vh;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:8px;">
-      <label style="display:flex;align-items:center;gap:8px;padding:4px 0 6px;font-weight:700;border-bottom:1px solid var(--border);margin-bottom:4px;">
-        <input type="checkbox" id="srcf-all" ${selected.length===0?'checked':''} onchange="srColFilterToggleAll(this.checked)"> (Select All)
-      </label>
-      ${options.map(o => `<label style="display:flex;align-items:center;gap:8px;padding:3px 0;font-size:13px;">
-        <input type="checkbox" class="srcf-opt" value="${esc(o)}" ${(selected.length===0 || selected.includes(o)) ? 'checked' : ''} onchange="srColFilterOptChanged()">
-        ${esc(o)}
-      </label>`).join('')}
-    </div>` : `<div style="color:var(--text3);font-style:italic;padding:12px 0;">No values to filter yet.</div>`}
+    ${options.length ? `
+      <input type="text" id="srcf-search" placeholder="Search ${esc(label)}..." oninput="srColFilterSearch(this.value)" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;box-sizing:border-box;margin-bottom:8px;font-size:13px;">
+      <div style="max-height:50vh;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:8px;">
+        <label style="display:flex;align-items:center;gap:8px;padding:4px 0 6px;font-weight:700;border-bottom:1px solid var(--border);margin-bottom:4px;">
+          <input type="checkbox" id="srcf-all" ${selected.length===0?'checked':''} onchange="srColFilterToggleAll(this.checked)"> (Select All)
+        </label>
+        <div id="srcf-list">${options.map(o => _srcfRowHtml(o, selected.length===0 || selected.includes(o))).join('')}</div>
+        <div id="srcf-noresults" style="display:none;color:var(--text3);font-style:italic;padding:8px 0;">No matches.</div>
+      </div>` : `<div style="color:var(--text3);font-style:italic;padding:12px 0;">No values to filter yet.</div>`}
     <div class="modal-actions">
       <button class="btn" onclick="closeModal()">Cancel</button>
       <button class="btn btn-primary" onclick="srColFilterApply('${field}')">Apply</button>
     </div>
   </div>`);
 }
-function srColFilterToggleAll(checked) {
-  document.querySelectorAll('.srcf-opt').forEach(el => { el.checked = checked; });
+function srColFilterSearch(q) {
+  const term = String(q || '').trim().toLowerCase();
+  let visible = 0;
+  document.querySelectorAll('.srcf-opt-row').forEach(row => {
+    const match = !term || (row.dataset.text || '').includes(term);
+    row.style.display = match ? '' : 'none';
+    if (match) visible++;
+  });
+  const none = document.getElementById('srcf-noresults');
+  if (none) none.style.display = visible ? 'none' : '';
 }
-function srColFilterOptChanged() {
+function srColFilterToggleAll(checked) {
+  // Only touches rows the search box is currently showing, same as
+  // Excel's own "search + select all" combo.
+  document.querySelectorAll('.srcf-opt-row').forEach(row => {
+    if (row.style.display === 'none') return;
+    const cb = row.querySelector('.srcf-opt');
+    cb.checked = checked;
+    row.style.background = checked ? '#bbf7d0' : '';
+  });
+}
+function srColFilterOptChanged(cb) {
+  const row = cb.closest('.srcf-opt-row');
+  if (row) row.style.background = cb.checked ? '#bbf7d0' : '';
   const all = [...document.querySelectorAll('.srcf-opt')];
   const allEl = document.getElementById('srcf-all');
   if (allEl) allEl.checked = all.every(el => el.checked);
@@ -12787,12 +12833,16 @@ function srColFilterApply(field) {
   const checked = all.filter(el => el.checked).map(el => el.value);
   // Everything checked == no filter (matches how the modal opens with
   // everything checked when colFilters[field] is empty).
-  saleReportState.colFilters[field] = (checked.length === all.length) ? [] : checked;
+  const isFiltered = checked.length !== all.length;
+  saleReportState.colFilters[field] = isFiltered ? checked : [];
+  if (isFiltered) saleReportState.colFiltersSetAt[field] = Date.now();
+  else delete saleReportState.colFiltersSetAt[field];
   _persistSr();
   closeModal();
   renderSaleReport();
 }
 function renderSaleReport() {
+  srExpireColFilters();
   const rows = buildSaleReportRows();
   const el = document.getElementById('sr-content');
   if (!el) return;
@@ -12829,7 +12879,7 @@ function renderSaleReport() {
   // here and a change there are the exact same write. stopPropagation
   // keeps the click off the row's own "open job card" handler.
   const editCell = (r, field, value, maxW) => canEditFields
-    ? `<input type="text" value="${esc(value)}" onclick="event.stopPropagation()" onchange="event.stopPropagation(); saveDeliveryEntryField(${r.id}, ${r.deliveryIndex}, '${field}', this.value)" style="width:100%;min-width:${maxW}px;padding:4px 6px;border:1px solid var(--border);border-radius:4px;box-sizing:border-box;font-size:12px;">`
+    ? `<input type="${field === 'cartons' ? 'number' : 'text'}" ${field === 'cartons' ? 'min="0.01" step="any"' : ''} value="${esc(value)}" onclick="event.stopPropagation()" onchange="event.stopPropagation(); saveDeliveryEntryField(${r.id}, ${r.deliveryIndex}, '${field}', this.value)" style="width:100%;min-width:${maxW}px;padding:4px 6px;border:1px solid var(--border);border-radius:4px;box-sizing:border-box;font-size:12px;">`
     : `<span title="${esc(value)}">${esc(value)}</span>`;
   const tbody = rows.map(r => {
     const rateCell = canEditRate
@@ -12849,7 +12899,7 @@ function renderSaleReport() {
       <td ${td}>${editCell(r, 'notes', r.challan, 90)}</td>
       <td ${tdR}>${esc(r.poQty)}</td>
       <td ${tdR}>${esc(r.cartonQty)}</td>
-      <td ${tdR}>${r.cartons.toLocaleString()}${(r.isShadeCard && r.cartons) ? ' copies' : ''}</td>
+      <td ${tdR}>${editCell(r, 'cartons', r.cartons, 70)}</td>
       <td ${tdR}>${r.cartonsPackets > 0 ? r.cartonsPackets.toLocaleString() : '&mdash;'}</td>
       <td ${tdR}>${r.wastage === null ? '&mdash;' : fmt(r.wastage)}</td>
       <td style="padding:8px 10px;text-align:right;font-weight:600;color:${r.readyQty > 0 ? '#166534' : 'var(--text2)'};">${fmt(r.readyQty)}</td>
@@ -20477,15 +20527,15 @@ function deliveriesSection(j, opts) {
   const rateFieldPlaceholder = 'e.g. 12.50';
   const taxFieldPrefill = (j.tax_pct !== null && j.tax_pct !== undefined && j.tax_pct !== '') ? j.tax_pct : 18;
 
-  // Every field but Cartons/Date is inline-editable for whoever can record
-  // deliveries — Cartons/Date stay fixed here because they drive
-  // delqty/stage-completion (see computeDeliveryUpdate); editing those
-  // safely would need to re-run that same recompute, which is a separate,
-  // bigger piece of work nobody's asked for. PATCH /api/jobs/:id/deliveries/:index
-  // is scoped to just the reference fields (po_no/batch_no/fbr_no/notes/msi_no).
+  // Every field, including Cartons, is inline-editable for whoever can
+  // record deliveries. Cartons drives delqty/stage-completion (see
+  // computeDeliveryUpdate), so PATCH /api/jobs/:id/deliveries/:index
+  // recomputes both server-side on a cartons edit — same forward/back
+  // stage rules the create/delete routes already use. Date stays fixed
+  // (nobody's asked for that one).
   const canEditEntries = !managerMode && canRecordDelivery();
   const editCell = (i, field, value, opts2) => canEditEntries
-    ? `<input type="text" value="${esc(value)}" onchange="saveDeliveryEntryField(${j.id}, ${i}, '${field}', this.value)" title="${esc((opts2&&opts2.title)||'')}" style="width:100%;padding:4px 6px;border:1px solid var(--border);border-radius:4px;box-sizing:border-box;font-size:12px;">`
+    ? `<input type="${field === 'cartons' ? 'number' : 'text'}" ${field === 'cartons' ? 'min="0.01" step="any"' : ''} value="${esc(value)}" onchange="saveDeliveryEntryField(${j.id}, ${i}, '${field}', this.value)" title="${esc((opts2&&opts2.title)||'')}" style="width:100%;padding:4px 6px;border:1px solid var(--border);border-radius:4px;box-sizing:border-box;font-size:12px;">`
     : `<span title="${esc(value)}">${esc(value)}</span>`;
   // Cartons/Packets is a job-level figure (what the Pasting/Ready-to-
   // Deliver station wrote), not per-delivery — same value shows on every
@@ -20523,7 +20573,7 @@ function deliveriesSection(j, opts) {
             ${delBtn}
           </div>
           <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(95px,1fr));gap:10px;">
-            ${fieldBox(countLabel, `<b>${esc(ctns)}</b>`)}
+            ${fieldBox(countLabel, editCell(i, 'cartons', ctns, { title: 'Editing this changes Delivered Qty / stage — recompute is automatic.' }))}
             ${fieldBox('Cartons/Packets', cartonsPackets > 0 ? `<b>${cartonsPackets.toLocaleString()}</b>` : '&mdash;')}
             ${isShadeCard ? '' : fieldBox('PO No.', editCell(i, 'po_no', po))}
             ${isShadeCard ? '' : fieldBox('Batch No.', editCell(i, 'batch_no', bat))}
@@ -21226,14 +21276,19 @@ async function recordDelivery(jobId) {
   showSaving(false);
 }
 
-// Inline-edit one already-recorded delivery's reference field (PO No.,
-// Batch No., E-FBR No., MSI No., Invoice No.) — auto-saves on change, no
+// Inline-edit one already-recorded delivery's field — PO No., Batch No.,
+// E-FBR No., MSI No., Invoice No., or Cartons — auto-saves on change, no
 // separate save step. Used by the job card's Deliveries ledger table and
-// the Sale Report table. Deliberately never touches cartons/date (see the
-// server route's own comment for why). Re-renders the job card in place
-// so the edited value + any dependent view (e.g. Sale Report row) stays
-// in sync without a full reload.
+// the Sale Report table. A cartons edit recomputes delqty/stage on the
+// server (see the PATCH route), so the whole job can change shape, not
+// just this one field. Re-renders the job card in place so the edited
+// value + any dependent view (e.g. Sale Report row) stays in sync without
+// a full reload.
 async function saveDeliveryEntryField(jobId, index, field, valueStr) {
+  if (field === 'cartons') {
+    const n = parseFloat(String(valueStr).replace(/[^0-9.\-]/g, ''));
+    if (!Number.isFinite(n) || n <= 0) { notify('Cartons must be a positive number'); render(); return; }
+  }
   showSaving(true);
   try {
     const updated = await api('PATCH', `/api/jobs/${jobId}/deliveries/${index}`, { field, value: valueStr });
