@@ -12424,7 +12424,7 @@ function printJobsReport() {
 // bulk-select/created-mode toggle. Gated by delivery_write, same as
 // Company Settings and the Product Rate tab — this is the one report that
 // shows pricing.
-const saleReportState = loadPersistedFilters('sale-report', { client: '', dateRange: '', dfrom: '', dto: '', q: '', type: '', sortBy: 'id', sortDir: 'asc' });
+const saleReportState = loadPersistedFilters('sale-report', { client: '', dateRange: '', dfrom: '', dto: '', q: '', type: '', sortBy: 'id', sortDir: 'asc', poSearch: '', challanSearch: '', milOnly: false });
 
 function openSaleReportPage() {
   if (!hasPerm('rpt_sale_report', 'view')) { notify('Sale Report is not available for your role.'); return; }
@@ -12450,6 +12450,20 @@ function openSaleReport() {
       <div>
         <div class="dash-flbl">Search (Job No. / Name)</div>
         <input class="filter" type="text" id="sr-q" value="${esc(saleReportState.q)}" placeholder="e.g. 59 or FENBRO" oninput="setSrQ(this.value)" style="min-width:180px;">
+      </div>
+      <div>
+        <div class="dash-flbl">PO No. Search</div>
+        <div class="search-wrap">
+          <input type="text" id="sr-po-search" value="${esc(saleReportState.poSearch)}" placeholder="Search PO No…" oninput="setSrPoSearch(this.value)">
+          <span class="search-icon">&#128269;</span>
+        </div>
+      </div>
+      <div>
+        <div class="dash-flbl">Invoice No. Search</div>
+        <div class="search-wrap">
+          <input type="text" id="sr-challan-search" value="${esc(saleReportState.challanSearch)}" placeholder="Search Invoice No…" oninput="setSrChallanSearch(this.value)">
+          <span class="search-icon">&#128269;</span>
+        </div>
       </div>
       ${dateFilterToolbarHtml('sr', saleReportState.dateRange, saleReportState.dfrom, saleReportState.dto, 'setSrDateRange', 'setSrDateCustom')}
       <div>
@@ -12488,6 +12502,13 @@ function openSaleReport() {
         <div class="dash-flbl">&nbsp;</div>
         <button class="btn btn-sm" id="sr-sort-dir" onclick="toggleSrSortDir()" title="Toggle ascending/descending">${saleReportState.sortDir === 'asc' ? '&#8593; Asc' : '&#8595; Desc'}</button>
       </div>
+      <div>
+        <div class="dash-flbl">&nbsp;</div>
+        <label class="jr-mil-whole-toggle whole-toggle ${saleReportState.milOnly?'is-on':''}">
+          <input class="jr-mil-toggle-input" type="checkbox" id="sr-mil-only" ${saleReportState.milOnly ? 'checked' : ''} onchange="setSrMilOnly(this.checked)">
+          <span class="whole-toggle-text">MIL Products only</span>
+        </label>
+      </div>
     </div>
     <div id="sr-content" style="font-size:12px;"></div>
   `;
@@ -12516,6 +12537,25 @@ function toggleSrSortDir() {
   if (btn) btn.innerHTML = saleReportState.sortDir === 'asc' ? '&#8593; Asc' : '&#8595; Desc';
   _persistSr(); renderSaleReport();
 }
+let _srPoSearchTimer = null;
+function setSrPoSearch(v) {
+  saleReportState.poSearch = String(v || '').trim();
+  _persistSr();
+  clearTimeout(_srPoSearchTimer);
+  _srPoSearchTimer = setTimeout(renderSaleReport, 200);
+}
+let _srChallanSearchTimer = null;
+function setSrChallanSearch(v) {
+  saleReportState.challanSearch = String(v || '').trim();
+  _persistSr();
+  clearTimeout(_srChallanSearchTimer);
+  _srChallanSearchTimer = setTimeout(renderSaleReport, 200);
+}
+function setSrMilOnly(v) {
+  saleReportState.milOnly = !!v;
+  document.getElementById('sr-mil-only')?.closest('.whole-toggle')?.classList.toggle('is-on', !!v);
+  _persistSr(); renderSaleReport();
+}
 
 // Build the rows — same shape/filters as buildJobsReportRows() (delivered
 // stage OR any recorded shipment, date range against the Delivered stage
@@ -12526,11 +12566,13 @@ function toggleSrSortDir() {
 // the net/gross line totals, which is what makes them summable in the
 // totals row below.
 function buildSaleReportRows() {
-  const { client, dateRange, dfrom, dto, q, type: typeFilter, sortBy, sortDir } = saleReportState;
+  const { client, dateRange, dfrom, dto, q, type: typeFilter, sortBy, sortDir, poSearch, challanSearch, milOnly } = saleReportState;
   const lastStageIdx = STAGES.length - 1;
   const qNorm  = String(q || '').trim().toLowerCase();
   const qId    = qNorm.replace(/^e-?/, '');
   const qIsNum = /^\d+$/.test(qId);
+  const poSearchNorm      = String(poSearch      || '').trim().toLowerCase();
+  const challanSearchNorm = String(challanSearch || '').trim().toLowerCase();
   const bounds = resolveDateFilterBounds(dateRange, dfrom, dto);
   const out = [];
   for (const j of jobs) {
@@ -12538,6 +12580,7 @@ function buildSaleReportRows() {
     const hasAnyShipment = deliveriesList.length > 0;
     if ((j.stage_index || 0) !== lastStageIdx && !hasAnyShipment) continue;
     if (client && j.client !== client) continue;
+    if (milOnly && !j.stock_group_name) continue;
     // Same Syrup/Susp/Tab/Caps/Labels/Leaflets/Sachet/Sticker glossary the
     // Product Rate tab's Type filter uses (detectProductType).
     const productType = detectProductType(j.name);
@@ -12586,6 +12629,8 @@ function buildSaleReportRows() {
     const batchNo = joinRefs('batch_no', j.bno);
     const fbrNo   = joinRefs('fbr_no', '');
     const challan = deliveriesList.map(d => deliveryChallanText(d).trim()).filter(Boolean).join(' | ');
+    if (poSearchNorm      && !poNo.toLowerCase().includes(poSearchNorm))      continue;
+    if (challanSearchNorm && !challan.toLowerCase().includes(challanSearchNorm)) continue;
     const shippedCartons = totalDeliveredCartons(j);
     const rEff = effectiveRate(j);
     const rate = rEff ? rEff.value : null;
@@ -12650,8 +12695,15 @@ function renderSaleReport() {
     amountExTax:  a.amountExTax  + (r.amountExTax  || 0),
     amountIncTax: a.amountIncTax + (r.amountIncTax || 0),
   }), { poQty: 0, cartonQty: 0, deliveredQty: 0, wastage: 0, readyQty: 0, packets: 0, amountExTax: 0, amountIncTax: 0 });
+  const canEditRate = hasPerm('products_btn_rate', 'yes');
   const tbody = rows.map(r => {
     const deliveredStyle = r.isPartial ? 'color:#ca8a04;font-weight:700;' : '';
+    const rateCell = canEditRate
+      ? `<input type="number" min="0" step="any" value="${r.rate !== null ? esc(String(r.rate)) : ''}" placeholder="&mdash;" onclick="event.stopPropagation()" onchange="event.stopPropagation(); saveHistoryPricing(${r.id}, null, 'rate', this.value)" style="width:70px;padding:3px 5px;border:1px solid var(--border);border-radius:5px;text-align:right;">`
+      : (r.rate !== null ? fmtRate(r.rate) : '&mdash;');
+    const taxCell = canEditRate
+      ? `<input type="number" min="0" step="any" value="${esc(String(r.taxPct))}" onclick="event.stopPropagation()" onchange="event.stopPropagation(); saveHistoryPricing(${r.id}, null, 'tax', this.value)" style="width:55px;padding:3px 5px;border:1px solid var(--border);border-radius:5px;text-align:right;">`
+      : `${fmt(r.taxPct)}%`;
     return `<tr class="row-hover-red cv-summary-row" style="border-bottom:1px solid var(--border);cursor:pointer;" onclick="setMode('jobs'); setTimeout(()=>openEdit(${r.id}),50);" title="Open this job's card">
       <td ${td}>${esc(r.idDisplay)}</td>
       <td ${td}>${esc(r.name)}${r.isShadeCard ? ' <span style="display:inline-block;background:#dcfce7;color:#166534;font-weight:800;font-size:9px;letter-spacing:0.04em;text-transform:uppercase;padding:1px 6px;border-radius:999px;vertical-align:middle;white-space:nowrap;">&#127912; Shade Card</span>' : ''}</td>
@@ -12669,9 +12721,9 @@ function renderSaleReport() {
       <td ${td}>${esc(r.paper)}</td>
       <td ${td}>${esc(r.machine)}</td>
       <td ${td}>${esc(r.coatings)}</td>
-      <td ${tdR}>${r.rate !== null ? fmtRate(r.rate) : '&mdash;'}</td>
+      <td ${tdR}>${rateCell}</td>
       <td ${tdR}>${r.amountExTax !== null ? fmtRate(r.amountExTax) : '&mdash;'}</td>
-      <td ${tdR}>${fmt(r.taxPct)}%</td>
+      <td ${tdR}>${taxCell}</td>
       <td ${tdR}>${r.amountIncTax !== null ? fmtRate(r.amountIncTax) : '&mdash;'}</td>
       <td ${td}>${esc(r.client)}</td>
       <td ${td}>${esc(r.destination)}</td>
@@ -20691,6 +20743,7 @@ async function addProductAlias(ci) {
 function openProductHistoryModal(i) {
   const g = __productGroupsCache[i];
   if (!g) return;
+  const canEdit = hasPerm('products_btn_rate', 'yes');
   // The product's own standard Rate (top of the tile) — a shipment whose
   // job rate was edited away from this reads amber/yellow below, so an
   // override is obvious at a glance against the rest of the history.
@@ -20701,19 +20754,26 @@ function openProductHistoryModal(i) {
     const list = Array.isArray(j.deliveries) ? j.deliveries : [];
     const r = effectiveRate(j);
     const rate = r ? r.value : null;
+    const taxPct = (j.tax_pct !== null && j.tax_pct !== undefined && j.tax_pct !== '') ? Number(j.tax_pct) : 18;
     const overridden = defaultRate !== null && rate !== null && Math.abs(rate - defaultRate) > 0.0001;
     list.forEach(d => {
       const cartons = parseFloat(d && d.cartons) || 0;
       rows.push({
         jobId: j.id, client: j.client || '', date: (d && d.date) || '',
         po: (d && d.po_no) || '', fbr: (d && d.fbr_no) || '',
-        invoice: deliveryChallanText(d), cartons, rate, overridden,
+        invoice: deliveryChallanText(d), cartons, rate, taxPct, overridden,
       });
     });
   }
   rows.sort((a, b) => String(b.date).localeCompare(String(a.date)));
   const body = rows.length ? rows.map(r => {
     const rateStyle = r.overridden ? 'color:#ca8a04;font-weight:700;' : '';
+    const rateCell = canEdit
+      ? `<input type="number" min="0" step="any" value="${r.rate != null ? esc(String(r.rate)) : ''}" placeholder="&mdash;" onchange="saveHistoryPricing(${r.jobId}, '${esc(g.key)}', 'rate', this.value)" style="width:70px;padding:3px 5px;border:1px solid var(--border);border-radius:5px;text-align:right;${rateStyle}">`
+      : `<span style="${rateStyle}" title="${r.overridden ? 'Edited away from this product\'s standard rate (' + fmtRate(defaultRate) + ')' : ''}">${r.rate != null ? fmtRate(r.rate) : '&mdash;'}</span>`;
+    const taxCell = canEdit
+      ? `<input type="number" min="0" step="any" value="${esc(String(r.taxPct))}" onchange="saveHistoryPricing(${r.jobId}, '${esc(g.key)}', 'tax', this.value)" style="width:55px;padding:3px 5px;border:1px solid var(--border);border-radius:5px;text-align:right;">`
+      : `${esc(String(r.taxPct))}%`;
     return `<tr>
     <td style="padding:6px 8px;">${esc(r.date)}</td>
     <td style="padding:6px 8px;"><a href="#" onclick="event.preventDefault(); closeModal(); setMode('jobs'); setTimeout(()=>openEdit(${r.jobId}),50);">E-${r.jobId}</a></td>
@@ -20722,13 +20782,14 @@ function openProductHistoryModal(i) {
     <td style="padding:6px 8px;">${esc(r.fbr)}</td>
     <td style="padding:6px 8px;">${esc(r.invoice)}</td>
     <td style="text-align:right;padding:6px 8px;">${r.cartons.toLocaleString()}</td>
-    <td style="text-align:right;padding:6px 8px;${rateStyle}" title="${r.overridden ? 'Edited away from this product\'s standard rate (' + fmtRate(defaultRate) + ')' : ''}">${r.rate != null ? fmtRate(r.rate) : '&mdash;'}</td>
+    <td style="text-align:right;padding:6px 8px;">${rateCell}</td>
+    <td style="text-align:right;padding:6px 8px;">${taxCell}</td>
     <td style="text-align:right;padding:6px 8px;">${r.rate != null ? fmtRate(r.cartons * r.rate) : '&mdash;'}</td>
   </tr>`;
-  }).join('') : `<tr><td colspan="9" style="text-align:center;color:var(--text3);font-style:italic;padding:16px;">No shipments recorded yet.</td></tr>`;
-  openModal(`<div class="modal" onclick="event.stopPropagation()" style="max-width:900px;">
+  }).join('') : `<tr><td colspan="10" style="text-align:center;color:var(--text3);font-style:italic;padding:16px;">No shipments recorded yet.</td></tr>`;
+  openModal(`<div class="modal" onclick="event.stopPropagation()" style="max-width:960px;">
     <h2 style="margin:0 0 4px;">${esc(g.name)}</h2>
-    <div style="font-size:12px;color:var(--text2);margin-bottom:12px;">Every shipment across every job with this product name.${defaultRate !== null ? ' <span style="color:#ca8a04;font-weight:700;">Yellow</span> rate = edited away from this product\'s standard rate.' : ''}</div>
+    <div style="font-size:12px;color:var(--text2);margin-bottom:12px;">Every shipment across every job with this product name.${defaultRate !== null ? ' <span style="color:#ca8a04;font-weight:700;">Yellow</span> rate = edited away from this product\'s standard rate.' : ''}${canEdit ? ' Rate/Sale Tax % are editable per job — a change applies to every shipment on that job.' : ''}</div>
     <div style="max-height:60vh;overflow:auto;">
     <table style="width:100%;border-collapse:collapse;font-size:12px;">
       <thead><tr style="background:#f3f4f6;">
@@ -20740,6 +20801,7 @@ function openProductHistoryModal(i) {
         <th style="text-align:left;padding:6px 8px;">Invoice No.</th>
         <th style="text-align:right;padding:6px 8px;">Cartons</th>
         <th style="text-align:right;padding:6px 8px;">Rate</th>
+        <th style="text-align:right;padding:6px 8px;">Sale Tax %</th>
         <th style="text-align:right;padding:6px 8px;">Revenue</th>
       </tr></thead>
       <tbody>${body}</tbody>
@@ -20747,6 +20809,35 @@ function openProductHistoryModal(i) {
     </div>
     <div class="modal-actions"><button class="btn" onclick="closeModal()">Close</button></div>
   </div>`);
+}
+// Save a job's Rate/Sale Tax % from an editable row (Product Rate tab's
+// history modal, or the Sale Report table) via the same PATCH the old
+// standalone Pricing box used to call. Re-renders whichever view called
+// it — reopening the history modal at its (possibly shifted, since
+// editing a rate re-sorts tiles by revenue) new index for this product.
+async function saveHistoryPricing(jobId, groupKey, field, valueStr) {
+  const job = jobs.find(j => j.id === jobId);
+  if (!job) return;
+  const val = parseFloat(valueStr);
+  if (!Number.isFinite(val) || val < 0) { await alertDialog({ title: 'Enter a valid number', kind: 'warn' }); return; }
+  const curRate = (job.rate !== null && job.rate !== undefined && job.rate !== '') ? Number(job.rate) : (effectiveRate(job) ? effectiveRate(job).value : null);
+  const curTax  = (job.tax_pct !== null && job.tax_pct !== undefined && job.tax_pct !== '') ? Number(job.tax_pct) : 18;
+  const rate    = field === 'rate' ? val : curRate;
+  const taxPct  = field === 'tax'  ? val : curTax;
+  showSaving(true);
+  try {
+    const updated = await api('PATCH', `/api/jobs/${jobId}/pricing`, { rate, tax_pct: taxPct });
+    const ix = jobs.findIndex(x => x.id === jobId);
+    if (ix >= 0) jobs[ix] = updated;
+    notify('Pricing updated');
+    if (document.getElementById('products-grid')) {
+      renderProductsTab();
+      const idx = __productGroupsCache.findIndex(g => g.key === groupKey);
+      if (idx >= 0) openProductHistoryModal(idx); else closeModal();
+    }
+    if (document.getElementById('sr-content')) renderSaleReport();
+  } catch (e) { notify('Error: ' + e.message); }
+  showSaving(false);
 }
 
 // ── Company Settings (Supreme Art Finance only) ────────────────────
