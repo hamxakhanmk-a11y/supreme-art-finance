@@ -2962,6 +2962,23 @@ td.jc-details-cell > input[type="text"] { padding-right: 20px; }
       <option value="Sachet">Sachet</option>
       <option value="Sticker">Sticker</option>
     </select>
+    <select class="filter" id="products-date-range" onchange="setProductsDateRange(this.value)">
+      <option value="">All time</option>
+      <option value="this-week">This week</option>
+      <option value="last-week">Last week</option>
+      <option value="past-7">Past 7 days</option>
+      <option value="this-month">This month</option>
+      <option value="last-month">Last month</option>
+      <option value="past-30">Past 30 days</option>
+      <option value="this-year">This year</option>
+      <option value="last-year">Last year</option>
+      <option value="custom">Custom range&hellip;</option>
+    </select>
+    <span id="products-date-custom" style="display:none;gap:6px;align-items:center;">
+      <input type="date" id="products-dfrom" class="filter" onchange="setProductsDateCustom()" style="padding:6px;">
+      <span style="color:var(--text2);font-size:12px;">to</span>
+      <input type="date" id="products-dto" class="filter" onchange="setProductsDateCustom()" style="padding:6px;">
+    </span>
     <span id="products-count" style="margin-left:auto;font-size:12px;color:var(--text2);align-self:center;"></span>
   </div>
   <div id="products-grid" style="display:grid;grid-template-columns:repeat(auto-fill, minmax(260px, 1fr));gap:14px;padding:4px 2px;"></div>
@@ -4016,6 +4033,93 @@ function dateRangeBounds(preset) {
     case 'last-year':  return { from: new Date(now.getFullYear()-1, 0, 1), to: new Date(now.getFullYear(), 0, 1) };
   }
   return null;
+}
+// Resolve a report's own {dateRange preset, custom dfrom, custom dto} into
+// millisecond bounds, reusing the same preset table dateRangeBounds()
+// already computes for the Jobs tab's own #date-filter — so "This month"
+// means the same window everywhere it appears. Returns null for "All
+// time" (no preset, no custom dates set).
+function resolveDateFilterBounds(preset, dfrom, dto) {
+  if (preset === 'custom') {
+    const from = dfrom ? new Date(dfrom + 'T00:00:00').getTime() : null;
+    const to   = dto   ? new Date(dto   + 'T23:59:59').getTime() : null;
+    if (from === null && to === null) return null;
+    return { from, to };
+  }
+  if (!preset) return null;
+  const b = dateRangeBounds(preset);
+  return b ? { from: b.from.getTime(), to: b.to.getTime() - 1 } : null;
+}
+// Human label for a {dateRange preset, dfrom, dto} triple — used on print
+// headers in place of raw From/To, since a preset (e.g. "This month")
+// leaves dfrom/dto empty.
+function dateRangeLabel(preset, dfrom, dto) {
+  if (!preset) return 'All time';
+  if (preset === 'custom') return `${fmtDMY(dfrom) || '(any)'} to ${fmtDMY(dto) || '(any)'}`;
+  const labels = { 'this-week':'This week', 'last-week':'Last week', 'past-7':'Past 7 days', 'this-month':'This month', 'last-month':'Last month', 'past-30':'Past 30 days', 'this-year':'This year', 'last-year':'Last year' };
+  return labels[preset] || preset;
+}
+// Shared "date filter" control markup — the same preset dropdown (All
+// time / This week / … / Custom range…) the Jobs tab's own #date-filter
+// uses, for a report that keeps its own state object instead of the
+// global filterDateRange/filterDateFrom/filterDateTo. idPrefix must be
+// unique per report (e.g. "sr" for Sale Report, "pr" for Products).
+function dateFilterToolbarHtml(idPrefix, preset, dfrom, dto, onPresetFn, onCustomFn) {
+  return `
+    <div>
+      <div class="dash-flbl">Date</div>
+      <select class="filter" id="${idPrefix}-date-range" onchange="${onPresetFn}(this.value)">
+        <option value="">All time</option>
+        <option value="this-week"${preset==='this-week'?' selected':''}>This week</option>
+        <option value="last-week"${preset==='last-week'?' selected':''}>Last week</option>
+        <option value="past-7"${preset==='past-7'?' selected':''}>Past 7 days</option>
+        <option value="this-month"${preset==='this-month'?' selected':''}>This month</option>
+        <option value="last-month"${preset==='last-month'?' selected':''}>Last month</option>
+        <option value="past-30"${preset==='past-30'?' selected':''}>Past 30 days</option>
+        <option value="this-year"${preset==='this-year'?' selected':''}>This year</option>
+        <option value="last-year"${preset==='last-year'?' selected':''}>Last year</option>
+        <option value="custom"${preset==='custom'?' selected':''}>Custom range&hellip;</option>
+      </select>
+    </div>
+    <span id="${idPrefix}-date-custom" style="display:${preset==='custom'?'inline-flex':'none'};gap:6px;align-items:center;">
+      <input type="date" id="${idPrefix}-dfrom" class="filter" value="${dfrom||''}" onchange="${onCustomFn}()" style="padding:6px;">
+      <span style="color:var(--text2);font-size:12px;">to</span>
+      <input type="date" id="${idPrefix}-dto" class="filter" value="${dto||''}" onchange="${onCustomFn}()" style="padding:6px;">
+    </span>`;
+}
+// Best available "when was this delivered" timestamp — the Delivered
+// stage's own stamp, falling back to the latest recorded shipment date.
+// Shared by the Sale Report and the Product Rate tab's date filter so
+// "This month" means the same window in both places.
+function jobDeliveredAnchorMs(j) {
+  const lastStageIdx = STAGES.length - 1;
+  const stageRec = j.stages && j.stages[lastStageIdx];
+  let refMs = NaN;
+  if (stageRec && stageRec.at) refMs = new Date(stageRec.at).getTime();
+  if (!isFinite(refMs) && stageRec && stageRec.time) {
+    const m = String(fmtStageTime(stageRec.time)).match(/^(\d{2})\/(\d{2})\/(\d{4})(?:\s+(\d{2}):(\d{2}))?/);
+    if (m) refMs = new Date(+m[3], +m[2]-1, +m[1], +(m[4]||0), +(m[5]||0)).getTime();
+  }
+  const deliveriesList = Array.isArray(j.deliveries) ? j.deliveries : [];
+  if (!isFinite(refMs) && deliveriesList.length) {
+    const stamps = deliveriesList.map(d => (d && d.at) ? new Date(d.at).getTime() : (d && d.date ? new Date(d.date + 'T12:00:00').getTime() : NaN)).filter(n => isFinite(n));
+    if (stamps.length) refMs = Math.max(...stamps);
+  }
+  return isFinite(refMs) ? refMs : null;
+}
+// Best-effort localStorage persistence for a report's own filter state —
+// so leaving a report (switching tabs, or a page reload) and coming back
+// doesn't reset whatever date range / search / sort was set. Wrapped in
+// try/catch since localStorage can throw (private browsing, quota, etc.).
+function loadPersistedFilters(key, defaults) {
+  try {
+    const raw = localStorage.getItem('fin-filters-' + key);
+    if (!raw) return { ...defaults };
+    return { ...defaults, ...JSON.parse(raw) };
+  } catch (e) { return { ...defaults }; }
+}
+function persistFilters(key, state) {
+  try { localStorage.setItem('fin-filters-' + key, JSON.stringify(state)); } catch (e) {}
 }
 function parseLocalDate(s) {
   if (!s) return null;
@@ -12280,7 +12384,7 @@ function printJobsReport() {
 // bulk-select/created-mode toggle. Gated by delivery_write, same as
 // Company Settings and the Product Rate tab — this is the one report that
 // shows pricing.
-const saleReportState = { client: '', dfrom: '', dto: '', q: '', type: '', sortBy: 'id', sortDir: 'asc' };
+const saleReportState = loadPersistedFilters('sale-report', { client: '', dateRange: '', dfrom: '', dto: '', q: '', type: '', sortBy: 'id', sortDir: 'asc' });
 
 function openSaleReportPage() {
   if (!canRecordDelivery()) { notify('Sale Report is not available for your role.'); return; }
@@ -12307,14 +12411,7 @@ function openSaleReport() {
         <div class="dash-flbl">Search (Job No. / Name)</div>
         <input class="filter" type="text" id="sr-q" value="${esc(saleReportState.q)}" placeholder="e.g. 59 or FENBRO" oninput="setSrQ(this.value)" style="min-width:180px;">
       </div>
-      <div>
-        <div class="dash-flbl">From</div>
-        <input class="filter" type="date" id="sr-dfrom" value="${saleReportState.dfrom}" onchange="setSrDFrom(this.value)">
-      </div>
-      <div>
-        <div class="dash-flbl">To</div>
-        <input class="filter" type="date" id="sr-dto" value="${saleReportState.dto}" onchange="setSrDTo(this.value)">
-      </div>
+      ${dateFilterToolbarHtml('sr', saleReportState.dateRange, saleReportState.dfrom, saleReportState.dto, 'setSrDateRange', 'setSrDateCustom')}
       <div>
         <div class="dash-flbl">Company</div>
         <select class="filter" id="sr-client" onchange="setSrClient(this.value)">
@@ -12356,17 +12453,28 @@ function openSaleReport() {
   `;
   renderSaleReport();
 }
-function setSrDFrom(v)  { saleReportState.dfrom = v;  renderSaleReport(); }
-function setSrDTo(v)    { saleReportState.dto = v;    renderSaleReport(); }
-function setSrQ(v)      { saleReportState.q = v;      renderSaleReport(); }
-function setSrClient(v) { saleReportState.client = v; renderSaleReport(); }
-function setSrType(v)   { saleReportState.type = v;   renderSaleReport(); }
-function setSrSortBy(v) { saleReportState.sortBy = v; renderSaleReport(); }
+function _persistSr() { persistFilters('sale-report', saleReportState); }
+function setSrDateRange(v) {
+  saleReportState.dateRange = v;
+  const custom = document.getElementById('sr-date-custom');
+  if (custom) custom.style.display = v === 'custom' ? 'inline-flex' : 'none';
+  if (v !== 'custom') { saleReportState.dfrom = ''; saleReportState.dto = ''; }
+  _persistSr(); renderSaleReport();
+}
+function setSrDateCustom() {
+  saleReportState.dfrom = (document.getElementById('sr-dfrom') || {}).value || '';
+  saleReportState.dto   = (document.getElementById('sr-dto')   || {}).value || '';
+  _persistSr(); renderSaleReport();
+}
+function setSrQ(v)      { saleReportState.q = v;      _persistSr(); renderSaleReport(); }
+function setSrClient(v) { saleReportState.client = v; _persistSr(); renderSaleReport(); }
+function setSrType(v)   { saleReportState.type = v;   _persistSr(); renderSaleReport(); }
+function setSrSortBy(v) { saleReportState.sortBy = v; _persistSr(); renderSaleReport(); }
 function toggleSrSortDir() {
   saleReportState.sortDir = saleReportState.sortDir === 'asc' ? 'desc' : 'asc';
   const btn = document.getElementById('sr-sort-dir');
   if (btn) btn.innerHTML = saleReportState.sortDir === 'asc' ? '&#8593; Asc' : '&#8595; Desc';
-  renderSaleReport();
+  _persistSr(); renderSaleReport();
 }
 
 // Build the rows — same shape/filters as buildJobsReportRows() (delivered
@@ -12378,19 +12486,20 @@ function toggleSrSortDir() {
 // the net/gross line totals, which is what makes them summable in the
 // totals row below.
 function buildSaleReportRows() {
-  const { client, dfrom, dto, q, type: typeFilter, sortBy, sortDir } = saleReportState;
+  const { client, dateRange, dfrom, dto, q, type: typeFilter, sortBy, sortDir } = saleReportState;
   const lastStageIdx = STAGES.length - 1;
   const qNorm  = String(q || '').trim().toLowerCase();
   const qId    = qNorm.replace(/^e-?/, '');
   const qIsNum = /^\d+$/.test(qId);
+  const bounds = resolveDateFilterBounds(dateRange, dfrom, dto);
   const out = [];
   for (const j of jobs) {
     const deliveriesList = Array.isArray(j.deliveries) ? j.deliveries : [];
     const hasAnyShipment = deliveriesList.length > 0;
     if ((j.stage_index || 0) !== lastStageIdx && !hasAnyShipment) continue;
     if (client && j.client !== client) continue;
-    // Same UC/GOP/PS/Labels/Tab/Cap glossary the Product Rate tab's Type
-    // filter uses (detectProductType), detected from the job name.
+    // Same Syrup/Susp/Tab/Caps/Labels/Leaflets/Sachet/Sticker glossary the
+    // Product Rate tab's Type filter uses (detectProductType).
     const productType = detectProductType(j.name);
     if (typeFilter && productType !== typeFilter) continue;
     if (qNorm) {
@@ -12404,20 +12513,11 @@ function buildSaleReportRows() {
     const deliveredAt = ledgerDates.length ? ledgerDates.join(' | ') : stampFromStage;
     // Computed unconditionally (not just when a date filter is active) —
     // "Delivered Date" is also one of the Sort by options below.
-    let refMs = NaN;
-    if (stageRec && stageRec.at) refMs = new Date(stageRec.at).getTime();
-    if (!isFinite(refMs) && stageRec && stageRec.time) {
-      const m = String(fmtStageTime(stageRec.time)).match(/^(\d{2})\/(\d{2})\/(\d{4})(?:\s+(\d{2}):(\d{2}))?/);
-      if (m) refMs = new Date(+m[3], +m[2]-1, +m[1], +(m[4]||0), +(m[5]||0)).getTime();
-    }
-    if (!isFinite(refMs) && deliveriesList.length) {
-      const stamps = deliveriesList.map(d => (d && d.at) ? new Date(d.at).getTime() : (d && d.date ? new Date(d.date + 'T12:00:00').getTime() : NaN)).filter(n => isFinite(n));
-      if (stamps.length) refMs = Math.max(...stamps);
-    }
-    if (dfrom || dto) {
-      if (!isFinite(refMs)) continue;
-      if (dfrom && refMs < new Date(dfrom + 'T00:00:00').getTime()) continue;
-      if (dto   && refMs > new Date(dto   + 'T23:59:59').getTime()) continue;
+    const refMs = jobDeliveredAnchorMs(j);
+    if (bounds) {
+      if (refMs === null) continue;
+      if (bounds.from !== null && refMs < bounds.from) continue;
+      if (bounds.to   !== null && refMs > bounds.to)   continue;
     }
     let packets = 0;
     const pktFromForm = parseFloat(j.particulars && j.particulars.quantity_of_packets);
@@ -12455,7 +12555,7 @@ function buildSaleReportRows() {
     const cs = companySettingsFor(j.client);
     out.push({
       id: j.id, idDisplay: 'E-' + j.id, name: j.name || '', type: productType,
-      deliveredAt, deliveredAtRaw: isFinite(refMs) ? refMs : null, client: j.client || '',
+      deliveredAt, deliveredAtRaw: refMs, client: j.client || '',
       poNo, batchNo, fbrNo, challan,
       poQty: j.qty || '', cartonQty: j.cartonqty || '', deliveredQty: j.delqty || '',
       wastage, readyQty, packets, paper,
@@ -12677,7 +12777,7 @@ function printSaleReport() {
           <div style="font-size:10pt;">Sale Report</div>
         </div>
         <div style="margin-left:auto;font-size:8pt;text-align:right;">
-          <div><b>From:</b> ${esc(fmtDMY(saleReportState.dfrom) || '(any)')} &nbsp; <b>To:</b> ${esc(fmtDMY(saleReportState.dto) || '(any)')}</div>
+          <div><b>Period:</b> ${esc(dateRangeLabel(saleReportState.dateRange, saleReportState.dfrom, saleReportState.dto))}</div>
           <div><b>Company:</b> ${esc(saleReportState.client || 'All')} &nbsp; <b>Jobs:</b> ${rows.length}</div>
           <div>Generated: ${fmtDMYT(new Date())}</div>
         </div>
@@ -20299,13 +20399,14 @@ function companyInfoLine(j) {
 // cartons × each job's own effective rate) / Avg Rate, with the default
 // Rate editable inline for delivery_write holders. Click a tile for its
 // full shipment history across every job with that name.
-let productsFilter = { search: '', company: '', type: '' };
+let productsFilter = loadPersistedFilters('products', { search: '', company: '', type: '', dateRange: '', dfrom: '', dto: '' });
 let __productGroupsAll = [];
 let __productGroupsCache = [];
 
-// UC/GOP/PS/Labels/Tab/Cap — Hamza's shop abbreviations, detected as
-// whole tokens in the product name so "PS" doesn't false-match inside
-// another word. Purely a display/filter convenience; never stored.
+// Syrup/Susp/Tab/Caps/Labels/Leaflets/Sachet/Sticker — Hamza's actual
+// product categories, detected as whole tokens in the product name so
+// "cap" doesn't false-match inside another word. Purely a display/filter
+// convenience; never stored.
 function detectProductType(name) {
   const tokens = String(name || '').toLowerCase().split(/[^a-z]+/).filter(Boolean);
   if (tokens.some(t => t === 'syrup' || t === 'syrups')) return 'Syrup';
@@ -20318,11 +20419,24 @@ function detectProductType(name) {
   if (tokens.some(t => t === 'sticker' || t === 'stickers')) return 'Sticker';
   return '';
 }
+// Date filter scopes which JOBS contribute to each product's totals — a
+// job outside the window is skipped entirely (same as it never existed
+// for this tile), rather than filtering product tiles by some aggregate
+// date. Anchored on the Delivered stamp when there is one, falling back
+// to the job's created date so a not-yet-delivered job can still be
+// scoped by "This month" etc.
 function buildProductGroups() {
+  const bounds = resolveDateFilterBounds(productsFilter.dateRange, productsFilter.dfrom, productsFilter.dto);
   const groups = new Map();
   for (const j of (jobs || [])) {
     const name = String(j.name || '').trim();
     if (!name) continue;
+    if (bounds) {
+      const anchor = jobDeliveredAnchorMs(j) ?? (j.created_at ? new Date(j.created_at).getTime() : null);
+      if (anchor === null) continue;
+      if (bounds.from !== null && anchor < bounds.from) continue;
+      if (bounds.to   !== null && anchor > bounds.to)   continue;
+    }
     const key = name.toLowerCase();
     if (!groups.has(key)) {
       groups.set(key, { key, name, companies: new Set(), jobs: [], cartons: 0, revenue: 0, type: detectProductType(name) });
@@ -20345,6 +20459,14 @@ function renderProductsTab() {
   if (searchEl && searchEl.value !== productsFilter.search) searchEl.value = productsFilter.search;
   const typeSel = document.getElementById('products-type-filter');
   if (typeSel) typeSel.value = productsFilter.type;
+  const dateSel = document.getElementById('products-date-range');
+  if (dateSel) dateSel.value = productsFilter.dateRange;
+  const dateCustom = document.getElementById('products-date-custom');
+  if (dateCustom) dateCustom.style.display = productsFilter.dateRange === 'custom' ? 'inline-flex' : 'none';
+  const dfromEl = document.getElementById('products-dfrom');
+  if (dfromEl) dfromEl.value = productsFilter.dfrom;
+  const dtoEl = document.getElementById('products-dto');
+  if (dtoEl) dtoEl.value = productsFilter.dto;
   refilterProductsGrid();
 }
 function refilterProductsGrid() {
@@ -20366,9 +20488,29 @@ function refilterProductsGrid() {
   const countEl = document.getElementById('products-count');
   if (countEl) countEl.textContent = filtered.length + (filtered.length !== __productGroupsAll.length ? ' of ' + __productGroupsAll.length : '');
 }
-function setProductsSearch(v) { productsFilter.search = v; refilterProductsGrid(); }
-function setProductsCompanyFilter(v) { productsFilter.company = v; refilterProductsGrid(); }
-function setProductsTypeFilter(v) { productsFilter.type = v; refilterProductsGrid(); }
+function _persistProductsFilter() { persistFilters('products', productsFilter); }
+function setProductsSearch(v) { productsFilter.search = v; _persistProductsFilter(); refilterProductsGrid(); }
+function setProductsCompanyFilter(v) { productsFilter.company = v; _persistProductsFilter(); refilterProductsGrid(); }
+function setProductsTypeFilter(v) { productsFilter.type = v; _persistProductsFilter(); refilterProductsGrid(); }
+// Date range changes which JOBS feed the aggregation in the first place
+// (see buildProductGroups), so it needs a full rebuild, not just a
+// refilter of the already-built groups.
+function setProductsDateRange(v) {
+  productsFilter.dateRange = v;
+  const custom = document.getElementById('products-date-custom');
+  if (custom) custom.style.display = v === 'custom' ? 'inline-flex' : 'none';
+  if (v !== 'custom') { productsFilter.dfrom = ''; productsFilter.dto = ''; }
+  _persistProductsFilter();
+  __productGroupsAll = buildProductGroups();
+  refilterProductsGrid();
+}
+function setProductsDateCustom() {
+  productsFilter.dfrom = (document.getElementById('products-dfrom') || {}).value || '';
+  productsFilter.dto   = (document.getElementById('products-dto')   || {}).value || '';
+  _persistProductsFilter();
+  __productGroupsAll = buildProductGroups();
+  refilterProductsGrid();
+}
 function productTileHtml(g, i) {
   const rateRow = productRates.find(r => String(r.product || '').trim().toLowerCase() === g.key);
   const savedRate = rateRow ? Number(rateRow.rate) : null;
