@@ -2953,12 +2953,14 @@ td.jc-details-cell > input[type="text"] { padding-right: 20px; }
     <select class="filter" id="products-company-filter" onchange="setProductsCompanyFilter(this.value)"><option value="">All companies</option></select>
     <select class="filter" id="products-type-filter" onchange="setProductsTypeFilter(this.value)">
       <option value="">All types</option>
-      <option value="UC">UC &mdash; Unit Carton</option>
-      <option value="GOP">GOP &mdash; Government of Punjab</option>
-      <option value="PS">PS &mdash; Physician Sample</option>
-      <option value="Labels">Labels</option>
+      <option value="Syrup">Syrup</option>
+      <option value="Susp">Susp &mdash; Suspension</option>
       <option value="Tab">Tab &mdash; Tablets</option>
-      <option value="Cap">Cap &mdash; Capsules</option>
+      <option value="Caps">Caps &mdash; Capsules</option>
+      <option value="Labels">Labels</option>
+      <option value="Leaflets">Leaflets</option>
+      <option value="Sachet">Sachet</option>
+      <option value="Sticker">Sticker</option>
     </select>
     <span id="products-count" style="margin-left:auto;font-size:12px;color:var(--text2);align-self:center;"></span>
   </div>
@@ -12324,12 +12326,14 @@ function openSaleReport() {
         <div class="dash-flbl">Type</div>
         <select class="filter" id="sr-type" onchange="setSrType(this.value)">
           <option value="">All types</option>
-          <option value="UC"${saleReportState.type==='UC'?' selected':''}>UC &mdash; Unit Carton</option>
-          <option value="GOP"${saleReportState.type==='GOP'?' selected':''}>GOP &mdash; Government of Punjab</option>
-          <option value="PS"${saleReportState.type==='PS'?' selected':''}>PS &mdash; Physician Sample</option>
-          <option value="Labels"${saleReportState.type==='Labels'?' selected':''}>Labels</option>
+          <option value="Syrup"${saleReportState.type==='Syrup'?' selected':''}>Syrup</option>
+          <option value="Susp"${saleReportState.type==='Susp'?' selected':''}>Susp &mdash; Suspension</option>
           <option value="Tab"${saleReportState.type==='Tab'?' selected':''}>Tab &mdash; Tablets</option>
-          <option value="Cap"${saleReportState.type==='Cap'?' selected':''}>Cap &mdash; Capsules</option>
+          <option value="Caps"${saleReportState.type==='Caps'?' selected':''}>Caps &mdash; Capsules</option>
+          <option value="Labels"${saleReportState.type==='Labels'?' selected':''}>Labels</option>
+          <option value="Leaflets"${saleReportState.type==='Leaflets'?' selected':''}>Leaflets</option>
+          <option value="Sachet"${saleReportState.type==='Sachet'?' selected':''}>Sachet</option>
+          <option value="Sticker"${saleReportState.type==='Sticker'?' selected':''}>Sticker</option>
         </select>
       </div>
       <div>
@@ -20304,12 +20308,14 @@ let __productGroupsCache = [];
 // another word. Purely a display/filter convenience; never stored.
 function detectProductType(name) {
   const tokens = String(name || '').toLowerCase().split(/[^a-z]+/).filter(Boolean);
-  if (tokens.includes('uc')) return 'UC';
-  if (tokens.includes('gop')) return 'GOP';
-  if (tokens.includes('ps')) return 'PS';
-  if (tokens.some(t => t === 'label' || t === 'labels')) return 'Labels';
+  if (tokens.some(t => t === 'syrup' || t === 'syrups')) return 'Syrup';
+  if (tokens.some(t => t === 'susp' || t === 'suspension' || t === 'suspensions')) return 'Susp';
   if (tokens.some(t => t === 'tab' || t === 'tabs' || t === 'tablet' || t === 'tablets')) return 'Tab';
-  if (tokens.some(t => t === 'cap' || t === 'caps' || t === 'capsule' || t === 'capsules')) return 'Cap';
+  if (tokens.some(t => t === 'cap' || t === 'caps' || t === 'capsule' || t === 'capsules')) return 'Caps';
+  if (tokens.some(t => t === 'label' || t === 'labels')) return 'Labels';
+  if (tokens.some(t => t === 'leaflet' || t === 'leaflets')) return 'Leaflets';
+  if (tokens.some(t => t === 'sachet' || t === 'sachets')) return 'Sachet';
+  if (tokens.some(t => t === 'sticker' || t === 'stickers')) return 'Sticker';
   return '';
 }
 function buildProductGroups() {
