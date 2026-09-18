@@ -3008,16 +3008,6 @@ td.jc-details-cell > input[type="text"] { padding-right: 20px; }
         <div class="report-card-title">Board IN/OUT</div>
         <div class="report-card-desc">Manual Job Card Consumption &mdash; paper issued against a manual job card number, for jobs not tracked in the app.</div>
       </button>
-      <button class="report-card" onclick="openImportsPage()">
-        <div class="report-card-icon">&#128666;</div>
-        <div class="report-card-title">Imports</div>
-        <div class="report-card-desc">Booked-but-not-yet-arrived shipments. Track pending orders and mark them received to feed Stock Summary.</div>
-      </button>
-      <button class="report-card sm-hide" onclick="openJobsReportPage()">
-        <div class="report-card-icon">&#128196;</div>
-        <div class="report-card-title">Jobs Report</div>
-        <div class="report-card-desc">Tabular log of every delivered job — date, company, PO number, quantities, packets consumed, paper, machine, coatings. With print + Excel export.</div>
-      </button>
       <button class="report-card sale-report-only" onclick="openSaleReportPage()">
         <div class="report-card-icon">&#128176;</div>
         <div class="report-card-title">Sale Report</div>
@@ -12440,7 +12430,7 @@ function openSaleReport() {
   pane.innerHTML = `
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap;">
       <h2 style="margin:0;font-size:20px;">Sale Report</h2>
-      <span style="color:var(--text2);font-size:12px;">Delivered jobs — quantities, paper/machine/coatings, Rate, Sale Tax %, and Company/Destination/NTN.</span>
+      <span style="color:var(--text2);font-size:12px;">One row per shipment — every job with a delivery recorded, with Rate, Sale Tax %, and Company/Destination/NTN.</span>
       <div style="margin-left:auto;display:flex;gap:8px;">
         <button class="btn btn-sm" onclick="exportSaleReport()">&#128202; Export to Excel</button>
         <button class="btn btn-sm" onclick="printSaleReport()">&#128424; Print Report</button>
@@ -12494,7 +12484,7 @@ function openSaleReport() {
           <option value="name"${saleReportState.sortBy==='name'?' selected':''}>Job Name</option>
           <option value="delivered"${saleReportState.sortBy==='delivered'?' selected':''}>Delivered Date</option>
           <option value="client"${saleReportState.sortBy==='client'?' selected':''}>Company</option>
-          <option value="deliveredQty"${saleReportState.sortBy==='deliveredQty'?' selected':''}>Delivered Qty</option>
+          <option value="deliveredQty"${saleReportState.sortBy==='deliveredQty'?' selected':''}>Cartons</option>
           <option value="amount"${saleReportState.sortBy==='amount'?' selected':''}>Rate w/ Sale Tax</option>
         </select>
       </div>
@@ -12565,9 +12555,16 @@ function setSrMilOnly(v) {
 // shipped cartons — "Rate w/o Sale Tax" / "Rate w/ Sale Tax" are really
 // the net/gross line totals, which is what makes them summable in the
 // totals row below.
+// One row per DELIVERY ENTRY (not per job) — MSI No./Invoice No./E-FBR No.
+// only make sense as editable fields when a row maps unambiguously to one
+// shipment. Includes every job with at least one recorded delivery,
+// regardless of current stage — "all jobs whose delivery is recorded",
+// not just fully-Delivered ones. Job-level figures (Wastage, Ready Qty,
+// Packets, Paper, Machine, Coatings, PO Qty, Rate/Tax, Company/
+// Destination/NTN) repeat identically across a job's several shipment
+// rows; only Cartons/Rate w/o & w/ Sale Tax are per-shipment amounts.
 function buildSaleReportRows() {
   const { client, dateRange, dfrom, dto, q, type: typeFilter, sortBy, sortDir, poSearch, challanSearch, milOnly } = saleReportState;
-  const lastStageIdx = STAGES.length - 1;
   const qNorm  = String(q || '').trim().toLowerCase();
   const qId    = qNorm.replace(/^e-?/, '');
   const qIsNum = /^\d+$/.test(qId);
@@ -12577,8 +12574,7 @@ function buildSaleReportRows() {
   const out = [];
   for (const j of jobs) {
     const deliveriesList = Array.isArray(j.deliveries) ? j.deliveries : [];
-    const hasAnyShipment = deliveriesList.length > 0;
-    if ((j.stage_index || 0) !== lastStageIdx && !hasAnyShipment) continue;
+    if (!deliveriesList.length) continue;
     if (client && j.client !== client) continue;
     if (milOnly && !j.stock_group_name) continue;
     // Same Syrup/Susp/Tab/Caps/Labels/Leaflets/Sachet/Sticker glossary the
@@ -12589,18 +12585,6 @@ function buildSaleReportRows() {
       const idHit   = qIsNum && String(j.id) === qId;
       const nameHit = String(j.name || '').toLowerCase().includes(qNorm);
       if (!idHit && !nameHit) continue;
-    }
-    const stageRec = j.stages && j.stages[lastStageIdx];
-    const stampFromStage = stageRec && stageRec.time ? String(fmtStageTime(stageRec.time)).split(' ')[0] : '';
-    const ledgerDates = deliveriesList.map(d => d && d.date ? fmtDMY(d.date) : '').filter(Boolean);
-    const deliveredAt = ledgerDates.length ? ledgerDates.join(' | ') : stampFromStage;
-    // Computed unconditionally (not just when a date filter is active) —
-    // "Delivered Date" is also one of the Sort by options below.
-    const refMs = jobDeliveredAnchorMs(j);
-    if (bounds) {
-      if (refMs === null) continue;
-      if (bounds.from !== null && refMs < bounds.from) continue;
-      if (bounds.to   !== null && refMs > bounds.to)   continue;
     }
     let packets = 0;
     const pktFromForm = parseFloat(j.particulars && j.particulars.quantity_of_packets);
@@ -12620,34 +12604,39 @@ function buildSaleReportRows() {
     const paper = invItem
       ? `${invItem.paper_type}${invItem.size ? ' ' + invItem.size : ''}${invItem.gsm ? ' ' + invItem.gsm + 'gsm' : ''}`
       : (paperTypesArr.length ? paperTypesArr.join(', ') : (j.paper || ''));
-    const joinRefs = (key, fallback) => {
-      const vals = deliveriesList.map(d => (d && d[key] ? String(d[key]).trim() : '')).filter(Boolean);
-      if (vals.length) return vals.join(' | ');
-      return String(fallback || '').trim();
-    };
-    const poNo    = joinRefs('po_no', j.ref);
-    const batchNo = joinRefs('batch_no', j.bno);
-    const fbrNo   = joinRefs('fbr_no', '');
-    const challan = deliveriesList.map(d => deliveryChallanText(d).trim()).filter(Boolean).join(' | ');
-    if (poSearchNorm      && !poNo.toLowerCase().includes(poSearchNorm))      continue;
-    if (challanSearchNorm && !challan.toLowerCase().includes(challanSearchNorm)) continue;
-    const shippedCartons = totalDeliveredCartons(j);
     const rEff = effectiveRate(j);
     const rate = rEff ? rEff.value : null;
     const taxPct = (j.tax_pct !== null && j.tax_pct !== undefined && j.tax_pct !== '') ? Number(j.tax_pct) : 18;
-    const amountExTax  = rate !== null ? rate * shippedCartons : null;
-    const amountIncTax = amountExTax !== null ? amountExTax * (1 + taxPct / 100) : null;
     const cs = companySettingsFor(j.client);
-    out.push({
-      id: j.id, idDisplay: 'E-' + j.id, name: j.name || '', type: productType,
-      deliveredAt, deliveredAtRaw: refMs, client: j.client || '',
-      poNo, batchNo, fbrNo, challan,
-      poQty: j.qty || '', cartonQty: j.cartonqty || '', deliveredQty: j.delqty || '',
-      wastage, readyQty, packets, paper,
-      machine: j.machine || '', coatings: Array.isArray(j.coatings) ? j.coatings.join(', ') : '',
-      isShadeCard: !!j.is_shade_card, isPartial: isPartialDelivery(j),
-      rate, taxPct, amountExTax, amountIncTax,
-      destination: (cs && cs.destination) || '', ntn: (cs && cs.ntn) || '',
+    deliveriesList.forEach((d, idx) => {
+      const poNo    = (d && d.po_no    ? String(d.po_no).trim()    : '') || (j.ref || '');
+      const batchNo = (d && d.batch_no ? String(d.batch_no).trim() : '') || (j.bno || '');
+      const fbrNo   = (d && d.fbr_no ? String(d.fbr_no).trim() : '');
+      const msiNo   = (d && d.msi_no ? String(d.msi_no).trim() : '');
+      const invoice = deliveryChallanText(d);
+      if (poSearchNorm      && !poNo.toLowerCase().includes(poSearchNorm))      return;
+      if (challanSearchNorm && !invoice.toLowerCase().includes(challanSearchNorm)) return;
+      const refMs = (d && d.at) ? new Date(d.at).getTime() : (d && d.date ? new Date(d.date + 'T12:00:00').getTime() : NaN);
+      const refMsOk = isFinite(refMs) ? refMs : null;
+      if (bounds) {
+        if (refMsOk === null) return;
+        if (bounds.from !== null && refMsOk < bounds.from) return;
+        if (bounds.to   !== null && refMsOk > bounds.to)   return;
+      }
+      const cartons = parseFloat(d && d.cartons) || 0;
+      const amountExTax  = rate !== null ? rate * cartons : null;
+      const amountIncTax = amountExTax !== null ? amountExTax * (1 + taxPct / 100) : null;
+      out.push({
+        id: j.id, idDisplay: 'E-' + j.id, deliveryIndex: idx, name: j.name || '', type: productType,
+        deliveredAt: (d && d.date) ? fmtDMY(d.date) : '', deliveredAtRaw: refMsOk, client: j.client || '',
+        poNo, batchNo, fbrNo, msiNo, challan: invoice,
+        poQty: j.qty || '', cartons,
+        wastage, readyQty, packets, paper,
+        machine: j.machine || '', coatings: Array.isArray(j.coatings) ? j.coatings.join(', ') : '',
+        isShadeCard: !!j.is_shade_card, isPartial: isPartialDelivery(j),
+        rate, taxPct, amountExTax, amountIncTax,
+        destination: (cs && cs.destination) || '', ntn: (cs && cs.ntn) || '',
+      });
     });
   }
   // Sort by whichever field the "Sort by" dropdown picked, ascending or
@@ -12659,7 +12648,7 @@ function buildSaleReportRows() {
       case 'name':         return String(r.name || '').toLowerCase();
       case 'client':       return String(r.client || '').toLowerCase();
       case 'delivered':    return r.deliveredAtRaw;
-      case 'deliveredQty': return +r.deliveredQty || 0;
+      case 'deliveredQty': return +r.cartons || 0;
       case 'amount':       return r.amountIncTax;
       case 'id': default:  return r.id;
     }
@@ -12684,20 +12673,25 @@ function renderSaleReport() {
   const fmt = n => !n && n !== 0 ? '' : (Number.isInteger(+n) ? (+n).toLocaleString() : (+n).toFixed(2));
   const td  = 'style="padding:8px 10px;"';
   const tdR = 'style="padding:8px 10px;text-align:right;"';
-  const wrapTd = (maxW) => `style="padding:8px 10px;max-width:${maxW}px;white-space:normal;word-break:break-word;font-size:11.5px;line-height:1.5;"`;
   const totals = rows.reduce((a, r) => ({
     poQty:        a.poQty        + (parseFloat(String(r.poQty).replace(/[^0-9.\-]/g, '')) || 0),
-    cartonQty:    a.cartonQty    + (+r.cartonQty || 0),
-    deliveredQty: a.deliveredQty + (+r.deliveredQty || 0),
+    cartons:      a.cartons      + (+r.cartons || 0),
     wastage:      a.wastage      + (r.wastage == null ? 0 : (+r.wastage || 0)),
     readyQty:     a.readyQty     + (+r.readyQty || 0),
     packets:      a.packets      + (+r.packets || 0),
     amountExTax:  a.amountExTax  + (r.amountExTax  || 0),
     amountIncTax: a.amountIncTax + (r.amountIncTax || 0),
-  }), { poQty: 0, cartonQty: 0, deliveredQty: 0, wastage: 0, readyQty: 0, packets: 0, amountExTax: 0, amountIncTax: 0 });
-  const canEditRate = hasPerm('products_btn_rate', 'yes');
+  }), { poQty: 0, cartons: 0, wastage: 0, readyQty: 0, packets: 0, amountExTax: 0, amountIncTax: 0 });
+  const canEditRate   = hasPerm('products_btn_rate', 'yes');
+  const canEditFields = canRecordDelivery();
+  // Inline-editable reference-field cell — same PATCH route the job
+  // card's Deliveries ledger uses (saveDeliveryEntryField), so a change
+  // here and a change there are the exact same write. stopPropagation
+  // keeps the click off the row's own "open job card" handler.
+  const editCell = (r, field, value, maxW) => canEditFields
+    ? `<input type="text" value="${esc(value)}" onclick="event.stopPropagation()" onchange="event.stopPropagation(); saveDeliveryEntryField(${r.id}, ${r.deliveryIndex}, '${field}', this.value)" style="width:100%;min-width:${maxW}px;padding:4px 6px;border:1px solid var(--border);border-radius:4px;box-sizing:border-box;font-size:12px;">`
+    : `<span title="${esc(value)}">${esc(value)}</span>`;
   const tbody = rows.map(r => {
-    const deliveredStyle = r.isPartial ? 'color:#ca8a04;font-weight:700;' : '';
     const rateCell = canEditRate
       ? `<input type="number" min="0" step="any" value="${r.rate !== null ? esc(String(r.rate)) : ''}" placeholder="&mdash;" onclick="event.stopPropagation()" onchange="event.stopPropagation(); saveHistoryPricing(${r.id}, null, 'rate', this.value)" style="width:70px;padding:3px 5px;border:1px solid var(--border);border-radius:5px;text-align:right;">`
       : (r.rate !== null ? fmtRate(r.rate) : '&mdash;');
@@ -12707,14 +12701,14 @@ function renderSaleReport() {
     return `<tr class="row-hover-red cv-summary-row" style="border-bottom:1px solid var(--border);cursor:pointer;" onclick="setMode('jobs'); setTimeout(()=>openEdit(${r.id}),50);" title="Open this job's card">
       <td ${td}>${esc(r.idDisplay)}</td>
       <td ${td}>${esc(r.name)}${r.isShadeCard ? ' <span style="display:inline-block;background:#dcfce7;color:#166534;font-weight:800;font-size:9px;letter-spacing:0.04em;text-transform:uppercase;padding:1px 6px;border-radius:999px;vertical-align:middle;white-space:nowrap;">&#127912; Shade Card</span>' : ''}</td>
-      <td ${wrapTd(160)}>${esc(r.deliveredAt)}</td>
-      <td ${wrapTd(140)}>${esc(r.poNo)}</td>
-      <td ${wrapTd(120)}>${esc(r.batchNo)}</td>
-      <td ${wrapTd(140)}>${esc(r.fbrNo)}</td>
-      <td ${wrapTd(140)}>${esc(r.challan)}</td>
+      <td ${td}>${esc(r.deliveredAt)}</td>
+      <td ${td}>${editCell(r, 'po_no', r.poNo, 90)}</td>
+      <td ${td}>${editCell(r, 'batch_no', r.batchNo, 80)}</td>
+      <td ${td}>${editCell(r, 'fbr_no', r.fbrNo, 100)}</td>
+      <td ${td}>${editCell(r, 'msi_no', r.msiNo, 90)}</td>
+      <td ${td}>${editCell(r, 'notes', r.challan, 90)}</td>
       <td ${tdR}>${esc(r.poQty)}</td>
-      <td ${tdR}>${esc(r.cartonQty)}</td>
-      <td style="padding:8px 10px;text-align:right;${deliveredStyle}">${esc(r.deliveredQty)}${(r.isShadeCard && r.deliveredQty !== '') ? ' copies' : ''}</td>
+      <td ${tdR}>${r.cartons.toLocaleString()}${(r.isShadeCard && r.cartons) ? ' copies' : ''}</td>
       <td ${tdR}>${r.wastage === null ? '&mdash;' : fmt(r.wastage)}</td>
       <td style="padding:8px 10px;text-align:right;font-weight:600;color:${r.readyQty > 0 ? '#166534' : 'var(--text2)'};">${fmt(r.readyQty)}</td>
       <td ${tdR}>${fmt(r.packets)}</td>
@@ -12733,7 +12727,7 @@ function renderSaleReport() {
   const th  = 'style="text-align:left;padding:8px 10px;font-size:11px;text-transform:uppercase;letter-spacing:0.04em;color:var(--text);font-weight:700;"';
   const thR = 'style="text-align:right;padding:8px 10px;font-size:11px;text-transform:uppercase;letter-spacing:0.04em;color:var(--text);font-weight:700;"';
   el.innerHTML = `
-    <div style="font-size:11px;color:var(--text2);margin-bottom:6px;">${rows.length} job${rows.length===1?'':'s'} in window</div>
+    <div style="font-size:11px;color:var(--text2);margin-bottom:6px;">${rows.length} shipment${rows.length===1?'':'s'} in window</div>
     <div class="report-scroll-wrap">
     <table class="ss-table" style="width:100%;border-collapse:collapse;font-size:13px;min-width:max-content;">
       <thead>
@@ -12744,10 +12738,10 @@ function renderSaleReport() {
           <th ${th}>PO No.</th>
           <th ${th}>Batch No.</th>
           <th ${th}>E-FBR No.</th>
+          <th ${th}>MSI No.</th>
           <th ${th}>Invoice No.</th>
           <th ${thR}>PO Qty</th>
-          <th ${thR}>Unit Carton Qty</th>
-          <th ${thR}>Delivered Qty</th>
+          <th ${thR}>Cartons</th>
           <th ${thR}>Wastage</th>
           <th ${thR}>Ready Qty</th>
           <th ${thR}>Packets</th>
@@ -12766,11 +12760,10 @@ function renderSaleReport() {
       <tbody>${tbody}</tbody>
       ${hasPerm('rpt_sale_report_totals', 'view') ? `<tfoot>
         <tr style="background:var(--bg2);font-weight:700;border-top:2px solid var(--border);">
-          <td colspan="2" style="padding:8px 10px;">${rows.length} job${rows.length===1?'':'s'}</td>
-          <td colspan="5" style="padding:8px 10px;text-align:right;color:var(--text2);">Total</td>
+          <td colspan="2" style="padding:8px 10px;">${rows.length} shipment${rows.length===1?'':'s'}</td>
+          <td colspan="6" style="padding:8px 10px;text-align:right;color:var(--text2);">Total</td>
           <td style="padding:8px 10px;text-align:right;">${fmt(totals.poQty)}</td>
-          <td style="padding:8px 10px;text-align:right;">${fmt(totals.cartonQty)}</td>
-          <td style="padding:8px 10px;text-align:right;">${fmt(totals.deliveredQty)}</td>
+          <td style="padding:8px 10px;text-align:right;">${fmt(totals.cartons)}</td>
           <td style="padding:8px 10px;text-align:right;">${fmt(totals.wastage)}</td>
           <td style="padding:8px 10px;text-align:right;">${fmt(totals.readyQty)}</td>
           <td style="padding:8px 10px;text-align:right;">${fmt(totals.packets)}</td>
@@ -12790,17 +12783,17 @@ async function exportSaleReport() {
   try { await ensureXlsx(); } catch (e) { notify(e.message); return; }
   const rows = buildSaleReportRows();
   if (!rows.length) { notify('Nothing to export — empty filter result.'); return; }
-  const header = ['Job ID', 'Job Name', 'Delivered', 'PO No.', 'Batch No.', 'E-FBR No.', 'Invoice No.',
-    'PO Qty', 'Unit Carton Qty', 'Delivered Qty', 'Wastage', 'Ready Qty', 'Packets Consumed', 'Paper', 'Machine', 'Coatings',
+  const header = ['Job ID', 'Job Name', 'Delivered', 'PO No.', 'Batch No.', 'E-FBR No.', 'MSI No.', 'Invoice No.',
+    'PO Qty', 'Cartons', 'Wastage', 'Ready Qty', 'Packets Consumed', 'Paper', 'Machine', 'Coatings',
     'Rate / Unit', 'Rate w/o Sale Tax', 'Sale Tax %', 'Rate w/ Sale Tax', 'Company', 'Destination', 'NTN'];
   const aoa = [header];
   for (const r of rows) {
-    let deliveredCell = r.isShadeCard && r.deliveredQty !== '' ? `${r.deliveredQty} copies` : r.deliveredQty;
-    if (r.isPartial && r.deliveredQty) deliveredCell = `${deliveredCell} (PARTIAL)`;
+    let cartonsCell = r.isShadeCard && r.cartons ? `${r.cartons} copies` : r.cartons;
+    if (r.isPartial) cartonsCell = `${cartonsCell} (PARTIAL)`;
     const nameCell = r.isShadeCard ? `${r.name} (Shade Card)` : r.name;
     aoa.push([
-      r.idDisplay, nameCell, r.deliveredAt, r.poNo, r.batchNo || '', r.fbrNo || '', r.challan || '',
-      r.poQty, r.cartonQty, deliveredCell, r.wastage === null ? '' : r.wastage, r.readyQty,
+      r.idDisplay, nameCell, r.deliveredAt, r.poNo, r.batchNo || '', r.fbrNo || '', r.msiNo || '', r.challan || '',
+      r.poQty, cartonsCell, r.wastage === null ? '' : r.wastage, r.readyQty,
       r.packets ? +r.packets.toFixed(2) : '', r.paper, r.machine, r.coatings,
       r.rate === null ? '' : r.rate,
       r.amountExTax === null ? '' : +r.amountExTax.toFixed(2),
@@ -12828,7 +12821,7 @@ function printSaleReport() {
   const tdR = 'style="border:1px solid #000;padding:4px;text-align:right;"';
   const fmt = n => !n && n !== 0 ? '' : (Number.isInteger(+n) ? (+n).toLocaleString() : (+n).toFixed(2));
   const tableRows = rows.map(r => {
-    const deliveredStyle = r.isPartial ? 'color:#ca8a04;font-weight:bold;' : '';
+    const cartonsStyle = r.isPartial ? 'color:#ca8a04;font-weight:bold;' : '';
     return `<tr>
     <td ${tdL}>${esc(r.idDisplay)}</td>
     <td ${tdL}>${esc(r.name)}${r.isShadeCard ? ' <b>(Shade Card)</b>' : ''}</td>
@@ -12836,10 +12829,10 @@ function printSaleReport() {
     <td ${tdL}>${esc(r.poNo)}</td>
     <td ${tdL}>${esc(r.batchNo || '')}</td>
     <td ${tdL}>${esc(r.fbrNo || '')}</td>
+    <td ${tdL}>${esc(r.msiNo || '')}</td>
     <td ${tdL}>${esc(r.challan || '')}</td>
     <td ${tdR}>${esc(r.poQty)}</td>
-    <td ${tdR}>${esc(r.cartonQty)}</td>
-    <td style="border:1px solid #000;padding:4px;text-align:right;${deliveredStyle}">${esc(r.deliveredQty)}${(r.isShadeCard && r.deliveredQty !== '') ? ' copies' : ''}</td>
+    <td style="border:1px solid #000;padding:4px;text-align:right;${cartonsStyle}">${r.cartons.toLocaleString()}${(r.isShadeCard && r.cartons) ? ' copies' : ''}</td>
     <td ${tdR}>${r.wastage === null ? '—' : fmt(r.wastage)}</td>
     <td ${tdR}>${fmt(r.readyQty)}</td>
     <td ${tdR}>${fmt(r.packets)}</td>
@@ -12870,14 +12863,14 @@ function printSaleReport() {
         </div>
         <div style="margin-left:auto;font-size:8pt;text-align:right;">
           <div><b>Period:</b> ${esc(dateRangeLabel(saleReportState.dateRange, saleReportState.dfrom, saleReportState.dto))}</div>
-          <div><b>Company:</b> ${esc(saleReportState.client || 'All')} &nbsp; <b>Jobs:</b> ${rows.length}</div>
+          <div><b>Company:</b> ${esc(saleReportState.client || 'All')} &nbsp; <b>Shipments:</b> ${rows.length}</div>
           <div>Generated: ${fmtDMYT(new Date())}</div>
         </div>
       </div>
       <table style="width:100%;font-size:7pt;border:1px solid #000;border-collapse:collapse;">
         <tr style="background:#eee;">
-          <th ${tdL}>Job ID</th><th ${tdL}>Job Name</th><th ${tdL}>Delivered</th><th ${tdL}>PO No.</th><th ${tdL}>Batch No.</th><th ${tdL}>E-FBR No.</th><th ${tdL}>Invoice No.</th>
-          <th ${tdR}>PO Qty</th><th ${tdR}>Unit Carton Qty</th><th ${tdR}>Delivered Qty</th><th ${tdR}>Wastage</th><th ${tdR}>Ready Qty</th><th ${tdR}>Packets</th>
+          <th ${tdL}>Job ID</th><th ${tdL}>Job Name</th><th ${tdL}>Delivered</th><th ${tdL}>PO No.</th><th ${tdL}>Batch No.</th><th ${tdL}>E-FBR No.</th><th ${tdL}>MSI No.</th><th ${tdL}>Invoice No.</th>
+          <th ${tdR}>PO Qty</th><th ${tdR}>Cartons</th><th ${tdR}>Wastage</th><th ${tdR}>Ready Qty</th><th ${tdR}>Packets</th>
           <th ${tdL}>Paper</th><th ${tdL}>Machine</th><th ${tdL}>Coatings</th>
           <th ${tdR}>Rate/Unit</th><th ${tdR}>Rate w/o Tax</th><th ${tdR}>Tax %</th><th ${tdR}>Rate w/ Tax</th>
           <th ${tdL}>Company</th><th ${tdL}>Destination</th><th ${tdL}>NTN</th>
@@ -20336,6 +20329,16 @@ function deliveriesSection(j, opts) {
   const rateFieldPlaceholder = 'e.g. 12.50';
   const taxFieldPrefill = (j.tax_pct !== null && j.tax_pct !== undefined && j.tax_pct !== '') ? j.tax_pct : 18;
 
+  // Every field but Cartons/Date is inline-editable for whoever can record
+  // deliveries — Cartons/Date stay fixed here because they drive
+  // delqty/stage-completion (see computeDeliveryUpdate); editing those
+  // safely would need to re-run that same recompute, which is a separate,
+  // bigger piece of work nobody's asked for. PATCH /api/jobs/:id/deliveries/:index
+  // is scoped to just the reference fields (po_no/batch_no/fbr_no/notes/msi_no).
+  const canEditEntries = !managerMode && canRecordDelivery();
+  const editCell = (i, field, value, opts2) => canEditEntries
+    ? `<input type="text" value="${esc(value)}" onchange="saveDeliveryEntryField(${j.id}, ${i}, '${field}', this.value)" title="${esc((opts2&&opts2.title)||'')}" style="width:100%;padding:4px 6px;border:1px solid var(--border);border-radius:4px;box-sizing:border-box;font-size:12px;">`
+    : `<span title="${esc(value)}">${esc(value)}</span>`;
   const rows = list.length
     ? list.map((d, i) => {
         const ctns = d.cartons  || '';
@@ -20343,6 +20346,7 @@ function deliveriesSection(j, opts) {
         const po   = d.po_no    || '';
         const bat  = d.batch_no || '';
         const fbr  = d.fbr_no   || '';
+        const msi  = d.msi_no   || '';
         const nt   = deliveryChallanText(d);
         const by   = d.by       || '';
         // Linked-delivery tag — this shipment was recorded via "Deliver
@@ -20357,15 +20361,16 @@ function deliveriesSection(j, opts) {
         return `<tr>
           <td style="padding:6px 8px;white-space:nowrap;">${esc(dt)}</td>
           <td style="text-align:right;font-weight:600;padding:6px 8px;white-space:nowrap;">${esc(ctns)}</td>
-          ${isShadeCard ? '' : `<td style="padding:6px 8px;word-break:break-all;" title="${esc(po)}">${esc(po)}</td>
-          <td style="padding:6px 8px;word-break:break-all;" title="${esc(bat)}">${esc(bat)}</td>`}
-          <td style="padding:6px 8px;word-break:break-all;" title="${esc(fbr)}">${esc(fbr)}</td>
-          <td style="padding:6px 8px;word-break:break-all;" title="${esc(nt)}">${esc(nt)}${linkedTag}</td>
+          ${isShadeCard ? '' : `<td style="padding:6px 8px;">${editCell(i, 'po_no', po)}</td>
+          <td style="padding:6px 8px;">${editCell(i, 'batch_no', bat)}</td>`}
+          <td style="padding:6px 8px;">${editCell(i, 'fbr_no', fbr)}</td>
+          <td style="padding:6px 8px;">${editCell(i, 'msi_no', msi)}</td>
+          <td style="padding:6px 8px;">${isShadeCard ? `<span title="${esc(nt)}">${esc(nt)}</span>` : editCell(i, 'notes', nt)}${linkedTag}</td>
           <td style="font-size:11px;color:var(--text2);padding:6px 8px;word-break:break-all;" title="${esc(by)}">${esc(by)}</td>
           <td style="text-align:center;padding:6px 4px;">${delBtn}</td>
         </tr>`;
       }).join('')
-    : `<tr><td colspan="${isShadeCard ? 6 : 8}" style="text-align:center;color:var(--text3);font-style:italic;padding:12px;">No deliveries recorded yet.</td></tr>`;
+    : `<tr><td colspan="${isShadeCard ? 7 : 9}" style="text-align:center;color:var(--text3);font-style:italic;padding:12px;">No deliveries recorded yet.</td></tr>`;
 
   // Ready-but-not-shipped chip — same figure the tile's own READY badge
   // shows (Ready to Deliver Qty minus what's already shipped). Sits right
@@ -20410,10 +20415,14 @@ function deliveriesSection(j, opts) {
             <input type="text" id="deliv-batch" value="${esc(j.bno || '')}" placeholder="e.g. B-11" title="Pre-filled from the job card's Batch No. — edit if this shipment carries a different batch." style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;box-sizing:border-box;">
           </div>`}
         </div>
-        <div style="display:grid;grid-template-columns:${showPricingFields ? '1fr 1fr 0.8fr 0.7fr auto' : '1fr 1fr auto'};gap:8px;align-items:end;margin-top:8px;">
+        <div style="display:grid;grid-template-columns:${showPricingFields ? '1fr 1fr 1fr 0.8fr 0.7fr auto' : '1fr 1fr 1fr auto'};gap:8px;align-items:end;margin-top:8px;">
           <div style="min-width:0;">
             <label style="font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:0.4px;display:block;margin-bottom:2px;">E-FBR No.</label>
             <input type="text" id="deliv-fbr" placeholder="e.g. 12345678901234" title="FBR electronic sales tax invoice number for this shipment." style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;box-sizing:border-box;">
+          </div>
+          <div style="min-width:0;">
+            <label style="font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:0.4px;display:block;margin-bottom:2px;">MSI No.</label>
+            <input type="text" id="deliv-msi" placeholder="e.g. MSI-042" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;box-sizing:border-box;">
           </div>
           <div style="min-width:0;">
             <label style="font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:0.4px;display:block;margin-bottom:2px;">${isShadeCard ? 'Delivery Challan (auto)' : 'Invoice No.'}</label>
@@ -20451,10 +20460,11 @@ function deliveriesSection(j, opts) {
       <colgroup>
         <col style="width:10%;">
         <col style="width:8%;">
-        ${isShadeCard ? '' : `<col style="width:12%;">
-        <col style="width:10%;">`}
-        <col style="width:12%;">
-        <col style="width:12%;">
+        ${isShadeCard ? '' : `<col style="width:11%;">
+        <col style="width:9%;">`}
+        <col style="width:11%;">
+        <col style="width:11%;">
+        <col style="width:11%;">
         <col style="width:auto;">
         <col style="width:36px;">
       </colgroup>
@@ -20465,6 +20475,7 @@ function deliveriesSection(j, opts) {
           ${isShadeCard ? '' : `<th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--border);">PO No.</th>
           <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--border);">Batch No.</th>`}
           <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--border);">E-FBR No.</th>
+          <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--border);">MSI No.</th>
           <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--border);">Invoice No.</th>
           <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--border);">By</th>
           <th style="padding:6px 8px;border-bottom:1px solid var(--border);"></th>
@@ -21037,6 +21048,7 @@ async function recordDelivery(jobId) {
   const poNo    = ((document.getElementById('deliv-po')||{}).value    || '').trim();
   const batchNo = ((document.getElementById('deliv-batch')||{}).value || '').trim();
   const fbrNo   = ((document.getElementById('deliv-fbr')||{}).value   || '').trim();
+  const msiNo   = ((document.getElementById('deliv-msi')||{}).value   || '').trim();
   const cartonsN = parseFloat(cartons);
   if (!Number.isFinite(cartonsN) || cartonsN <= 0) { await alertDialog({ title: 'Enter delivery cartons', kind: 'warn' }); return; }
   if (!date) { await alertDialog({ title: 'Pick a delivery date', kind: 'warn' }); return; }
@@ -21062,13 +21074,33 @@ async function recordDelivery(jobId) {
     // every shipment's PO / batch / tax invoice number across a job that
     // was split. rate/tax_pct (when present) update the job's own pricing
     // in the same request — recording a delivery is now what saves it.
-    const body = { cartons, date, notes, po_no: poNo, batch_no: batchNo, fbr_no: fbrNo };
+    const body = { cartons, date, notes, po_no: poNo, batch_no: batchNo, fbr_no: fbrNo, msi_no: msiNo };
     if (rateEl || taxEl) { body.rate = rate; body.tax_pct = taxPct; }
     const updated = await api('POST', `/api/jobs/${jobId}/deliveries`, body);
     const ix = jobs.findIndex(x => x.id === jobId);
     if (ix >= 0) jobs[ix] = updated;
     closeModal(); render(); notify('Delivery recorded');
     setTimeout(() => openEdit(jobId), 50);
+  } catch (e) { notify('Error: ' + e.message); }
+  showSaving(false);
+}
+
+// Inline-edit one already-recorded delivery's reference field (PO No.,
+// Batch No., E-FBR No., MSI No., Invoice No.) — auto-saves on change, no
+// separate save step. Used by the job card's Deliveries ledger table and
+// the Sale Report table. Deliberately never touches cartons/date (see the
+// server route's own comment for why). Re-renders the job card in place
+// so the edited value + any dependent view (e.g. Sale Report row) stays
+// in sync without a full reload.
+async function saveDeliveryEntryField(jobId, index, field, valueStr) {
+  showSaving(true);
+  try {
+    const updated = await api('PATCH', `/api/jobs/${jobId}/deliveries/${index}`, { field, value: valueStr });
+    const ix = jobs.findIndex(x => x.id === jobId);
+    if (ix >= 0) jobs[ix] = updated;
+    notify('Saved');
+    if (document.querySelector('.job-edit-modal')) { render(); setTimeout(() => openEdit(jobId), 50); }
+    if (document.getElementById('sr-content')) renderSaleReport();
   } catch (e) { notify('Error: ' + e.message); }
   showSaving(false);
 }

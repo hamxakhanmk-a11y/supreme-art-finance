@@ -1924,6 +1924,7 @@ const FINANCE_JOB_WRITES_ALLOWED = [
   // Deliveries — recording moved to this app (route checks delivery_write / delivery_delete)
   ['POST',   /^\/api\/jobs\/\d+\/deliveries$/],          // record a delivery
   ['DELETE', /^\/api\/jobs\/\d+\/deliveries\/\d+$/],     // remove a delivery entry
+  ['PATCH',  /^\/api\/jobs\/\d+\/deliveries\/\d+$/],     // edit a delivery entry's reference fields
   ['POST',   /^\/api\/jobs\/\d+\/deliver-linked$/],      // joint delivery with a linked job
   ['POST',   /^\/api\/groups\/deliver$/],                // MIL group delivery
   // Print counter (printing is viewing)
@@ -6316,7 +6317,7 @@ async function nextShadeCardDcNumber(sql) {
 // delivery endpoint and the Linked-Jobs joint delivery endpoint so the
 // two never drift out of sync (auto-advance-to-Delivered logic identical
 // in both places).
-function computeDeliveryUpdate(job, { cartonsN, date, notes, poNo, batchNo, fbrNo, linkedJobId, byEmail }) {
+function computeDeliveryUpdate(job, { cartonsN, date, notes, poNo, batchNo, fbrNo, msiNo, linkedJobId, byEmail }) {
   const bookedQty  = parseFloat(String(job.qty || '').replace(/[^0-9.\-]/g, '')) || 0;
   const priorTotal = sumDeliveryCartons(job.deliveries);
   const nextTotal  = priorTotal + cartonsN;
@@ -6326,6 +6327,7 @@ function computeDeliveryUpdate(job, { cartonsN, date, notes, poNo, batchNo, fbrN
     po_no: poNo,
     batch_no: batchNo,
     fbr_no: fbrNo || null,
+    msi_no: msiNo || null,
     by: byEmail || 'unknown',
     at: new Date().toISOString(),
     linked_job_id: linkedJobId || null,
@@ -6395,6 +6397,7 @@ app.post('/api/jobs/:id/deliveries', requireDeliveryWriter, async (req, res) => 
     const poNo    = String(req.body.po_no    ?? '').trim() || null;
     const batchNo = String(req.body.batch_no ?? '').trim() || null;
     const fbrNo   = String(req.body.fbr_no   ?? '').trim() || null;
+    const msiNo   = String(req.body.msi_no   ?? '').trim() || null;
     const cartonsN = parseFloat(cartons.replace(/[^0-9.\-]/g, ''));
     if (!Number.isFinite(cartonsN) || cartonsN <= 0) {
       return res.status(400).json({ error: 'Delivery cartons must be a positive number.' });
@@ -6440,7 +6443,7 @@ app.post('/api/jobs/:id/deliveries', requireDeliveryWriter, async (req, res) => 
     // request). Recording reality is the priority; the tile just shows
     // the running total against the booked qty for context.
     const { deliveries, delqty, stage_index, stages, log, entry, nextTotal, bookedQty } =
-      computeDeliveryUpdate(job, { cartonsN, date, notes, poNo, batchNo, fbrNo, byEmail: req.user?.email });
+      computeDeliveryUpdate(job, { cartonsN, date, notes, poNo, batchNo, fbrNo, msiNo, byEmail: req.user?.email });
     const nextRate   = hasPricing ? rate   : job.rate;
     const nextTaxPct = hasPricing ? taxPct : job.tax_pct;
     const updated = await sql`
@@ -7403,6 +7406,47 @@ app.delete('/api/jobs/:id/deliveries/:index', requirePermission('delivery_delete
       entityId: id,
       summary: `Removed delivery entry #${ix + 1} from Job E-${id}`,
       metadata: { removed, remaining_total: totalCartons },
+    });
+    res.json(updated[0]);
+  } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
+});
+
+// Edit one already-recorded delivery entry's reference fields — PO No.,
+// Batch No., E-FBR No., Invoice No., MSI No. Deliberately does NOT touch
+// cartons or date: those drive delqty/stage-completion (see
+// computeDeliveryUpdate/the DELETE route above), and re-deriving that from
+// an in-place edit is a separate, riskier piece of work nobody's asked for
+// yet — this route is scoped to the reference fields only. Used by both
+// the job card's Deliveries ledger (inline-editable per Hamza's request)
+// and the Sale Report table.
+app.patch('/api/jobs/:id/deliveries/:index', requireDeliveryWriter, async (req, res) => {
+  try {
+    await dbReady;
+    const sql = getDb();
+    const id = parseInt(req.params.id, 10);
+    const ix = parseInt(req.params.index, 10);
+    const rows = await sql`SELECT * FROM jobs WHERE id=${id} AND deleted_at IS NULL`;
+    if (!rows.length) return res.status(404).json({ error: 'Job not found' });
+    const job = rows[0];
+    const list = Array.isArray(job.deliveries) ? [...job.deliveries] : [];
+    if (ix < 0 || ix >= list.length) return res.status(400).json({ error: 'Delivery index out of range' });
+    const FIELDS = { po_no: 'po_no', batch_no: 'batch_no', fbr_no: 'fbr_no', notes: 'notes', msi_no: 'msi_no' };
+    const field = FIELDS[req.body?.field];
+    if (!field) return res.status(400).json({ error: 'field must be one of: po_no, batch_no, fbr_no, notes, msi_no' });
+    const value = String(req.body?.value ?? '').trim() || null;
+    const before = list[ix];
+    list[ix] = { ...before, [field]: value };
+    const updated = await sql`
+      UPDATE jobs SET deliveries = ${JSON.stringify(list)}
+       WHERE id = ${id}
+       RETURNING *
+    `;
+    await logAudit(sql, req, {
+      action: 'job.delivery.edit',
+      entityType: 'job',
+      entityId: id,
+      summary: `Job E-${id} delivery #${ix + 1}: ${field} "${before[field] || ''}" → "${value || ''}"`,
+      metadata: { index: ix, field, before: before[field] || null, after: value },
     });
     res.json(updated[0]);
   } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
