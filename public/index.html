@@ -2837,6 +2837,7 @@ td.jc-details-cell > input[type="text"] { padding-right: 20px; }
   </div>
   <div class="mode-switch" id="mode-switch">
     <button class="mode-btn active" data-mode="jobs" id="mode-jobs-btn" onclick="setMode('jobs')">Jobs</button>
+    <button class="mode-btn delivery-write-only-report" data-mode="products" id="mode-products-btn" onclick="setMode('products')">Product Rate</button>
     <button class="mode-btn" data-mode="reports" id="mode-reports-btn" onclick="setMode('reports')">Reports</button>
     <button class="mode-btn" data-mode="users" onclick="setMode('users')" id="mode-users-btn">Users</button>
   </div>
@@ -2943,6 +2944,27 @@ td.jc-details-cell > input[type="text"] { padding-right: 20px; }
   <div class="inventory-list" id="inventory-list"></div>
 </div>
 
+<div class="main" id="products-mode" style="display:none;">
+  <div class="toolbar">
+    <div class="search-wrap">
+      <input type="text" id="products-search" placeholder="Search product or company..." oninput="setProductsSearch(this.value)">
+      <span class="search-icon">&#128269;</span>
+    </div>
+    <select class="filter" id="products-company-filter" onchange="setProductsCompanyFilter(this.value)"><option value="">All companies</option></select>
+    <select class="filter" id="products-type-filter" onchange="setProductsTypeFilter(this.value)">
+      <option value="">All types</option>
+      <option value="UC">UC &mdash; Unit Carton</option>
+      <option value="GOP">GOP &mdash; Government of Punjab</option>
+      <option value="PS">PS &mdash; Physician Sample</option>
+      <option value="Labels">Labels</option>
+      <option value="Tab">Tab &mdash; Tablets</option>
+      <option value="Cap">Cap &mdash; Capsules</option>
+    </select>
+    <span id="products-count" style="margin-left:auto;font-size:12px;color:var(--text2);align-self:center;"></span>
+  </div>
+  <div id="products-grid" style="display:grid;grid-template-columns:repeat(auto-fill, minmax(260px, 1fr));gap:14px;padding:4px 2px;"></div>
+</div>
+
 <div class="main" id="reports-mode" style="display:none;">
   <!-- Landing: three clickable cards. Click one to enter its grouped view.
        Imports doesn't have sub-views so it opens its modal directly. -->
@@ -2964,11 +2986,6 @@ td.jc-details-cell > input[type="text"] { padding-right: 20px; }
         <div class="report-card-icon">&#128196;</div>
         <div class="report-card-title">Jobs Report</div>
         <div class="report-card-desc">Tabular log of every delivered job — date, company, PO number, quantities, packets consumed, paper, machine, coatings. With print + Excel export.</div>
-      </button>
-      <button class="report-card delivery-write-only-report" onclick="openProductRatesPage()">
-        <div class="report-card-icon">&#128176;</div>
-        <div class="report-card-title">Product Rate</div>
-        <div class="report-card-desc">Price per unit carton for each product. A job with no rate of its own suggests whatever's set here — editing a rate never changes a job that's already been priced.</div>
       </button>
     </div>
   </div>
@@ -3025,22 +3042,6 @@ td.jc-details-cell > input[type="text"] { padding-right: 20px; }
       <main class="reports-content">
         <div id="rt-jobs-report" class="rt-pane"></div>
         <div id="rt-prod-report" class="rt-pane" style="display:none;"></div>
-      </main>
-    </div>
-  </div>
-
-  <!-- Product Rate group — single pane, no sub-tabs (same shape as Imports). -->
-  <div id="product-rates-group" class="reports-group" style="display:none;">
-    <div class="reports-layout">
-      <aside class="reports-sidebar">
-        <button class="rsb-back" onclick="exitReportsGroup()" title="Back to Reports">&larr; Back</button>
-        <div class="rsb-section">Product Rate</div>
-        <button class="rsb-item active" data-rt="product-rates">
-          <span class="rsb-icon">&#128176;</span> Products
-        </button>
-      </aside>
-      <main class="reports-content">
-        <div id="rt-product-rates" class="rt-pane"></div>
       </main>
     </div>
   </div>
@@ -4872,6 +4873,7 @@ function setMode(m) {
   document.querySelectorAll('.mode-btn').forEach(b => b.classList.toggle('active', b.dataset.mode === m));
   requestAnimationFrame(() => syncFlowingTabIndicator('mode-switch'));
   document.getElementById('jobs-mode').style.display      = m === 'jobs' ? 'block' : 'none';
+  document.getElementById('products-mode').style.display  = m === 'products' ? 'block' : 'none';
   document.getElementById('inventory-mode').style.display = m === 'inventory' ? 'block' : 'none';
   document.getElementById('reports-mode').style.display   = m === 'reports' ? 'block' : 'none';
   document.getElementById('stickers-mode').style.display  = m === 'stickers' ? 'block' : 'none';
@@ -4894,6 +4896,11 @@ function setMode(m) {
     if (refreshBtn) refreshBtn.style.display = '';
     render();
     loadDailyStats();   // fills the Daily Unit Carton Qty card
+  } else if (m === 'products') {
+    addBtn.style.display = 'none';
+    exportBtn.style.display = 'none';
+    if (refreshBtn) refreshBtn.style.display = 'none';
+    renderProductsTab();
   } else if (m === 'inventory') {
     addBtn.style.display = canWriteInventory() ? '' : 'none';
     addBtn.textContent = '+ New Paper';   addBtn.onclick = openInvAdd;
@@ -19595,9 +19602,6 @@ function jobForm(j={}, opts) {
     <div class="jc-delivery-pricing ceo-hide-inner" style="margin-top:16px;padding:12px 14px;background:#fff;border:1px solid var(--border);border-radius:10px;">
       ${deliveriesSection(j, opts)}
       ${companyInfoLine(j)}
-      <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border);">
-        ${pricingSection(j)}
-      </div>
     </div>
     <div class="jc-extras">
       <div style="font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;">Additional notes (digital tracking only — not on printed card)</div>
@@ -19662,6 +19666,14 @@ function deliveriesSection(j, opts) {
   // useful to suggest, so the placeholder shows instead.
   const readyNotYetShipped = Math.max(0, (typeof readyCartonsTotal === 'function' ? readyCartonsTotal(j) : 0) - shipped);
   const cartonsPrefill = readyNotYetShipped > 0 ? readyNotYetShipped : '';
+  // Rate/Tax ride along with the delivery instead of a separate Save
+  // Pricing step — whoever records the shipment confirms (or overrides)
+  // the price at the same time. Pre-filled from the job's own saved rate,
+  // or the Product Rate table's suggestion once one exists.
+  const rEff = effectiveRate(j);
+  const rateFieldPrefill = (j.rate !== null && j.rate !== undefined && j.rate !== '') ? j.rate : '';
+  const rateFieldPlaceholder = (rEff && rEff.suggested) ? `Suggested: ${fmtRate(rEff.value)}` : 'e.g. 12.50';
+  const taxFieldPrefill = (j.tax_pct !== null && j.tax_pct !== undefined && j.tax_pct !== '') ? j.tax_pct : 18;
 
   const rows = list.length
     ? list.map((d, i) => {
@@ -19711,33 +19723,51 @@ function deliveriesSection(j, opts) {
     ? `Booked: <b>${booked.toLocaleString()}</b> ${countUnit} &middot; Shipped: <b>${shipped.toLocaleString()}</b> ${countUnit} &middot; Remaining: <b>${remaining.toLocaleString()}</b> ${countUnit}`
     : `Shipped: <b>${shipped.toLocaleString()}</b> ${countUnit} (booked P.O. qty not set)`;
 
+  // Rate/Tax are only editable here for whoever actually holds
+  // delivery_write — the Station Manager flow (managerMode) reaches
+  // canAddDelivery via the shade-card carve-out alone, without that
+  // permission, and previously only ever saw pricing as read-only text
+  // (see pricingInfoLine below), never a live input. Keep it that way.
+  const showPricingFields = !managerMode && canRecordDelivery();
   const addForm = canAddDelivery
-    ? `<div class="deliv-add" style="margin-top:10px;padding:10px 12px;background:#f9fafb;border:1px dashed #d1d5db;border-radius:8px;display:grid;grid-template-columns:${isShadeCard ? '0.7fr 1fr 0.9fr 1fr auto' : '0.7fr 1fr 0.9fr 0.9fr 0.9fr 1fr auto'};gap:8px;align-items:end;">
-        <div style="min-width:0;">
-          <label style="font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:0.4px;display:block;margin-bottom:2px;">${countLabel} *</label>
-          <input type="number" id="deliv-cartons" min="1" step="any" value="${cartonsPrefill}" placeholder="e.g. 50" title="Pre-filled from Ready Cartons Qty minus what's already shipped — edit if you're shipping a different amount." style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;box-sizing:border-box;">
+    ? `<div class="deliv-add" style="margin-top:10px;padding:10px 12px;background:#f9fafb;border:1px dashed #d1d5db;border-radius:8px;">
+        <div style="display:grid;grid-template-columns:${isShadeCard ? '1fr 1fr' : '1fr 1fr 1fr 1fr'};gap:8px;align-items:end;">
+          <div style="min-width:0;">
+            <label style="font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:0.4px;display:block;margin-bottom:2px;">${countLabel} *</label>
+            <input type="number" id="deliv-cartons" min="1" step="any" value="${cartonsPrefill}" placeholder="e.g. 50" title="Pre-filled from Ready Cartons Qty minus what's already shipped — edit if you're shipping a different amount." style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;box-sizing:border-box;">
+          </div>
+          <div style="min-width:0;">
+            <label style="font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:0.4px;display:block;margin-bottom:2px;">Date *</label>
+            <input type="date" id="deliv-date" value="${new Date().toISOString().slice(0,10)}" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;box-sizing:border-box;">
+          </div>
+          ${isShadeCard ? '' : `<div style="min-width:0;">
+            <label style="font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:0.4px;display:block;margin-bottom:2px;">PO No.</label>
+            <input type="text" id="deliv-po" value="${esc(j.ref || '')}" placeholder="e.g. PO-042" title="Pre-filled from the job card's PO No. — edit if this shipment goes on a different PO." style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;box-sizing:border-box;">
+          </div>
+          <div style="min-width:0;">
+            <label style="font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:0.4px;display:block;margin-bottom:2px;">Batch No.</label>
+            <input type="text" id="deliv-batch" value="${esc(j.bno || '')}" placeholder="e.g. B-11" title="Pre-filled from the job card's Batch No. — edit if this shipment carries a different batch." style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;box-sizing:border-box;">
+          </div>`}
         </div>
-        <div style="min-width:0;">
-          <label style="font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:0.4px;display:block;margin-bottom:2px;">Date *</label>
-          <input type="date" id="deliv-date" value="${new Date().toISOString().slice(0,10)}" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;box-sizing:border-box;">
+        <div style="display:grid;grid-template-columns:${showPricingFields ? '1fr 1fr 0.8fr 0.7fr auto' : '1fr 1fr auto'};gap:8px;align-items:end;margin-top:8px;">
+          <div style="min-width:0;">
+            <label style="font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:0.4px;display:block;margin-bottom:2px;">E-FBR No.</label>
+            <input type="text" id="deliv-fbr" placeholder="e.g. 12345678901234" title="FBR electronic sales tax invoice number for this shipment." style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;box-sizing:border-box;">
+          </div>
+          <div style="min-width:0;">
+            <label style="font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:0.4px;display:block;margin-bottom:2px;">${isShadeCard ? 'Delivery Challan (auto)' : 'Invoice No.'}</label>
+            <input type="text" id="deliv-notes" ${isShadeCard ? 'readonly' : ''} placeholder="${isShadeCard ? 'Assigned on save…' : 'e.g. INV-042'}" title="${isShadeCard ? 'Always auto-numbered against the shop\'s single DC register (DC-01, DC-02, …) — not editable. The same number to write into the physical DC register.' : ''}" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;box-sizing:border-box;${isShadeCard ? 'background:#f3f4f6;color:var(--text2);cursor:not-allowed;' : ''}">
+          </div>
+          ${showPricingFields ? `<div style="min-width:0;">
+            <label style="font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:0.4px;display:block;margin-bottom:2px;">Rate / Carton</label>
+            <input type="number" id="deliv-rate" min="0" step="any" value="${esc(String(rateFieldPrefill))}" placeholder="${esc(rateFieldPlaceholder)}" title="Same rate for the whole job until changed here. Leave blank to fall back to the Product Rate table's current suggestion." style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;box-sizing:border-box;">
+          </div>
+          <div style="min-width:0;">
+            <label style="font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:0.4px;display:block;margin-bottom:2px;">Sale Tax %</label>
+            <input type="number" id="deliv-tax" min="0" step="any" value="${esc(String(taxFieldPrefill))}" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;box-sizing:border-box;">
+          </div>` : ''}
+          <button type="button" class="btn btn-primary" style="background:#166534;border-color:#166534;padding:8px 14px;white-space:nowrap;" onclick="${managerMode ? `recordDeliveryManager(${j.id})` : `recordDelivery(${j.id})`}">+ Record Delivery</button>
         </div>
-        ${isShadeCard ? '' : `<div style="min-width:0;">
-          <label style="font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:0.4px;display:block;margin-bottom:2px;">PO No.</label>
-          <input type="text" id="deliv-po" value="${esc(j.ref || '')}" placeholder="e.g. PO-042" title="Pre-filled from the job card's PO No. — edit if this shipment goes on a different PO." style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;box-sizing:border-box;">
-        </div>
-        <div style="min-width:0;">
-          <label style="font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:0.4px;display:block;margin-bottom:2px;">Batch No.</label>
-          <input type="text" id="deliv-batch" value="${esc(j.bno || '')}" placeholder="e.g. B-11" title="Pre-filled from the job card's Batch No. — edit if this shipment carries a different batch." style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;box-sizing:border-box;">
-        </div>`}
-        <div style="min-width:0;">
-          <label style="font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:0.4px;display:block;margin-bottom:2px;">E-FBR No.</label>
-          <input type="text" id="deliv-fbr" placeholder="e.g. 12345678901234" title="FBR electronic sales tax invoice number for this shipment." style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;box-sizing:border-box;">
-        </div>
-        <div style="min-width:0;">
-          <label style="font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:0.4px;display:block;margin-bottom:2px;">${isShadeCard ? 'Delivery Challan (auto)' : 'Invoice No.'}</label>
-          <input type="text" id="deliv-notes" ${isShadeCard ? 'readonly' : ''} placeholder="${isShadeCard ? 'Assigned on save…' : 'e.g. INV-042'}" title="${isShadeCard ? 'Always auto-numbered against the shop\'s single DC register (DC-01, DC-02, …) — not editable. The same number to write into the physical DC register.' : ''}" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;box-sizing:border-box;${isShadeCard ? 'background:#f3f4f6;color:var(--text2);cursor:not-allowed;' : ''}">
-        </div>
-        <button type="button" class="btn btn-primary" style="background:#166534;border-color:#166534;padding:8px 14px;white-space:nowrap;" onclick="${managerMode ? `recordDeliveryManager(${j.id})` : `recordDelivery(${j.id})`}">+ Record Delivery</button>
       </div>${j.linked_job_id ? `<div style="margin-top:8px;">
         <button type="button" class="btn btn-sm" style="background:#5b21b6;border-color:#5b21b6;color:#fff;" onclick="openDeliverLinkedModal(${j.id})" title="Ship this job together with linked Job E-${j.linked_job_id} under one challan">&#128279; Deliver Linked (with E-${j.linked_job_id})</button>
       </div>` : ''}`
@@ -19747,12 +19777,15 @@ function deliveriesSection(j, opts) {
           ? `<div style="margin-top:10px;padding:8px 12px;background:#fff7ed;border:1px solid #fed7aa;border-radius:8px;color:#9a3412;font-size:12px;">Job is at Pasting &mdash; record some pasted cartons on the Pasting station to enable partial shipping from here.</div>`
           : '');
 
+  const pricingText = `Rate: <b>${rEff ? fmtRate(rEff.value) + (rEff.suggested ? ' <span style="font-weight:400;font-style:italic;color:var(--text2);">(suggested)</span>' : '') : '—'}</b> &middot; Sale Tax: <b>${esc(String(taxFieldPrefill))}%</b>`;
+
   return `<div class="jc-deliveries">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
       <div style="font-size:12px;color:var(--text2);text-transform:uppercase;letter-spacing:0.5px;font-weight:700;">Deliveries</div>
       ${statusPill}
     </div>
     <div style="font-size:12px;color:var(--text);margin-bottom:8px;">${summaryLine}</div>
+    <div style="font-size:12px;color:var(--text);margin-bottom:8px;">${pricingText}</div>
     <table style="width:100%;border-collapse:collapse;font-size:12px;table-layout:fixed;">
       <colgroup>
         <col style="width:10%;">
@@ -19793,142 +19826,183 @@ function companyInfoLine(j) {
   if (c.destination) parts.push(`<b>Destination</b> ${esc(c.destination)}`);
   return `<div style="font-size:12px;color:var(--text);margin:10px 0;">${parts.join(' &middot; ')}</div>`;
 }
-// Pricing (Supreme Art Finance only) — Rate (price per unit carton) and
-// Sale Tax %, editable by whoever can record deliveries. Read-only text
-// for everyone else, rather than a locked/disabled form: nothing here
-// needs DOM-locking the way the rest of the card does (see
-// lockJobCardExceptDeliveries), it just never renders inputs to begin
-// with. Lives inside the same box as Deliveries (deliveryAndPricingSection)
-// — invoicing information together, not two separate cards.
-function pricingSection(j) {
-  const r = effectiveRate(j);
-  const taxPct = (j.tax_pct !== null && j.tax_pct !== undefined && j.tax_pct !== '') ? j.tax_pct : 18;
-  if (!canRecordDelivery()) {
-    return `<div class="jc-pricing">
-      <div style="font-size:13px;color:var(--text);">Rate: <b>${r ? fmtRate(r.value) + (r.suggested ? ' <span style="font-weight:400;font-style:italic;color:var(--text2);">(suggested)</span>' : '') : '—'}</b> &middot; Sale Tax: <b>${esc(String(taxPct))}%</b></div>
-    </div>`;
+// ── Products tab (Supreme Art Finance only) ────────────────────────
+// Replaces the old "Product Rate" Reports card. Groups every job in
+// memory by product name (same case-insensitive key productRateFor()
+// already uses, so a tile's Rate edit lands on exactly the row that
+// feeds effectiveRate() for that name — no separate aliasing/normalizing
+// scheme). Each tile shows Jobs / Cartons shipped / Revenue (shipped
+// cartons × each job's own effective rate) / Avg Rate, with the default
+// Rate editable inline for delivery_write holders. Click a tile for its
+// full shipment history across every job with that name.
+let productsFilter = { search: '', company: '', type: '' };
+let __productGroupsAll = [];
+let __productGroupsCache = [];
+
+// UC/GOP/PS/Labels/Tab/Cap — Hamza's shop abbreviations, detected as
+// whole tokens in the product name so "PS" doesn't false-match inside
+// another word. Purely a display/filter convenience; never stored.
+function detectProductType(name) {
+  const tokens = String(name || '').toLowerCase().split(/[^a-z]+/).filter(Boolean);
+  if (tokens.includes('uc')) return 'UC';
+  if (tokens.includes('gop')) return 'GOP';
+  if (tokens.includes('ps')) return 'PS';
+  if (tokens.some(t => t === 'label' || t === 'labels')) return 'Labels';
+  if (tokens.some(t => t === 'tab' || t === 'tabs' || t === 'tablet' || t === 'tablets')) return 'Tab';
+  if (tokens.some(t => t === 'cap' || t === 'caps' || t === 'capsule' || t === 'capsules')) return 'Cap';
+  return '';
+}
+function buildProductGroups() {
+  const groups = new Map();
+  for (const j of (jobs || [])) {
+    const name = String(j.name || '').trim();
+    if (!name) continue;
+    const key = name.toLowerCase();
+    if (!groups.has(key)) {
+      groups.set(key, { key, name, companies: new Set(), jobs: [], cartons: 0, revenue: 0, type: detectProductType(name) });
+    }
+    const g = groups.get(key);
+    if (j.client) g.companies.add(String(j.client).trim());
+    g.jobs.push(j);
+    const shipped = totalDeliveredCartons(j);
+    g.cartons += shipped;
+    const r = effectiveRate(j);
+    if (r && shipped > 0) g.revenue += shipped * r.value;
   }
-  const ratePrefill = (j.rate !== null && j.rate !== undefined && j.rate !== '') ? j.rate : '';
-  const ratePlaceholder = (r && r.suggested) ? `Suggested: ${fmtRate(r.value)}` : 'e.g. 12.50';
-  return `<div class="jc-pricing">
-    <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:8px;align-items:end;max-width:420px;">
-      <div style="min-width:0;">
-        <label style="font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:0.4px;display:block;margin-bottom:2px;">Rate / Carton</label>
-        <input type="number" id="pr-rate" min="0" step="any" value="${esc(String(ratePrefill))}" placeholder="${esc(ratePlaceholder)}" title="Same rate for the whole job until changed here. Leave blank to fall back to the Product Rate table's current suggestion." style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;box-sizing:border-box;">
-      </div>
-      <div style="min-width:0;">
-        <label style="font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:0.4px;display:block;margin-bottom:2px;">Sale Tax %</label>
-        <input type="number" id="pr-tax" min="0" step="any" value="${esc(String(taxPct))}" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;box-sizing:border-box;">
-      </div>
-      <button type="button" class="btn btn-primary" style="background:#166534;border-color:#166534;padding:8px 14px;white-space:nowrap;" onclick="saveJobPricing(${j.id})">Save Pricing</button>
+  return [...groups.values()];
+}
+function renderProductsTab() {
+  __productGroupsAll = buildProductGroups();
+  const companySel = document.getElementById('products-company-filter');
+  if (companySel) companySel.innerHTML = '<option value="">All companies</option>' + clientCompanyOptions(productsFilter.company);
+  const searchEl = document.getElementById('products-search');
+  if (searchEl && searchEl.value !== productsFilter.search) searchEl.value = productsFilter.search;
+  const typeSel = document.getElementById('products-type-filter');
+  if (typeSel) typeSel.value = productsFilter.type;
+  refilterProductsGrid();
+}
+function refilterProductsGrid() {
+  const search = (productsFilter.search || '').trim().toLowerCase();
+  const company = (productsFilter.company || '').trim().toLowerCase();
+  const type = productsFilter.type || '';
+  const filtered = __productGroupsAll.filter(g => {
+    if (type && g.type !== type) return false;
+    if (company && ![...g.companies].some(c => c.toLowerCase() === company)) return false;
+    if (search && !(g.name.toLowerCase().includes(search) || [...g.companies].some(c => c.toLowerCase().includes(search)))) return false;
+    return true;
+  });
+  filtered.sort((a, b) => b.revenue - a.revenue || b.cartons - a.cartons || a.name.localeCompare(b.name));
+  __productGroupsCache = filtered;
+  const grid = document.getElementById('products-grid');
+  if (grid) grid.innerHTML = filtered.length
+    ? filtered.map((g, i) => productTileHtml(g, i)).join('')
+    : `<div style="grid-column:1/-1;text-align:center;color:var(--text3);font-style:italic;padding:30px;">No products match.</div>`;
+  const countEl = document.getElementById('products-count');
+  if (countEl) countEl.textContent = filtered.length + (filtered.length !== __productGroupsAll.length ? ' of ' + __productGroupsAll.length : '');
+}
+function setProductsSearch(v) { productsFilter.search = v; refilterProductsGrid(); }
+function setProductsCompanyFilter(v) { productsFilter.company = v; refilterProductsGrid(); }
+function setProductsTypeFilter(v) { productsFilter.type = v; refilterProductsGrid(); }
+function productTileHtml(g, i) {
+  const rateRow = productRates.find(r => String(r.product || '').trim().toLowerCase() === g.key);
+  const savedRate = rateRow ? Number(rateRow.rate) : null;
+  const avgRate = g.cartons > 0 && g.revenue > 0 ? g.revenue / g.cartons : savedRate;
+  const companies = [...g.companies].sort().join(', ');
+  const canEditRate = canRecordDelivery();
+  return `<div style="border:1px solid var(--border);border-radius:10px;padding:14px;background:#fff;cursor:pointer;" onclick="openProductHistoryModal(${i})" title="Click to view shipment history">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">
+      <div style="font-weight:700;font-size:14px;color:var(--text);flex:1;min-width:0;word-break:break-word;">${esc(g.name)}${g.type ? ` <span style="font-size:10px;font-weight:700;background:#eef2ff;color:#3730a3;padding:1px 6px;border-radius:999px;vertical-align:middle;white-space:nowrap;">${esc(g.type)}</span>` : ''}</div>
+      <span onclick="event.stopPropagation()" style="display:inline-flex;align-items:center;gap:4px;font-size:11px;color:var(--text2);white-space:nowrap;">
+        Rate
+        <input type="number" min="0" step="any" value="${savedRate !== null ? esc(String(savedRate)) : ''}" placeholder="&mdash;" ${canEditRate ? '' : 'disabled'} onchange="saveProductRateInline(${i}, this.value)" style="width:70px;padding:3px 5px;border:1px solid var(--border);border-radius:5px;text-align:right;">
+      </span>
+    </div>
+    <div style="font-size:12px;color:var(--text2);margin-top:4px;">${esc(companies) || '&mdash;'}</div>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:10px;font-size:12px;">
+      <div><div style="color:var(--text3);font-size:10px;text-transform:uppercase;">Jobs</div><div style="font-weight:700;">${g.jobs.length}</div></div>
+      <div><div style="color:var(--text3);font-size:10px;text-transform:uppercase;">Cartons</div><div style="font-weight:700;">${g.cartons.toLocaleString()}</div></div>
+      <div><div style="color:var(--text3);font-size:10px;text-transform:uppercase;">Revenue</div><div style="font-weight:700;">${g.revenue > 0 ? fmtRate(g.revenue) : '&mdash;'}</div></div>
+      <div><div style="color:var(--text3);font-size:10px;text-transform:uppercase;">Avg Rate</div><div style="font-weight:700;">${avgRate ? fmtRate(avgRate) : '&mdash;'}</div></div>
     </div>
   </div>`;
 }
-async function saveJobPricing(id) {
-  const rateStr = ((document.getElementById('pr-rate')||{}).value || '').trim();
-  const taxStr  = ((document.getElementById('pr-tax')||{}).value  || '').trim();
-  const rate = rateStr === '' ? null : parseFloat(rateStr);
-  if (rate !== null && (!Number.isFinite(rate) || rate < 0)) { await alertDialog({ title: 'Rate must be a non-negative number', kind: 'warn' }); return; }
-  const taxPct = parseFloat(taxStr);
-  if (!Number.isFinite(taxPct) || taxPct < 0) { await alertDialog({ title: 'Tax % must be a non-negative number', kind: 'warn' }); return; }
+async function saveProductRateInline(i, valueStr) {
+  const g = __productGroupsCache[i];
+  if (!g) return;
+  const val = String(valueStr || '').trim();
+  const rate = val === '' ? null : parseFloat(val);
+  if (rate !== null && (!Number.isFinite(rate) || rate < 0)) {
+    await alertDialog({ title: 'Enter a valid rate', kind: 'warn' });
+    refilterProductsGrid();
+    return;
+  }
   showSaving(true);
   try {
-    const updated = await api('PATCH', `/api/jobs/${id}/pricing`, { rate, tax_pct: taxPct });
-    jobs = jobs.map(x => x.id === id ? { ...x, ...updated } : x);
-    render();
-    notify('Pricing saved');
-    setTimeout(() => openEdit(id), 50);
-  } catch (e) { notify('Error: ' + e.message); }
+    const existing = productRates.find(r => String(r.product || '').trim().toLowerCase() === g.key);
+    if (rate === null) {
+      if (existing) await api('DELETE', `/api/product-rates/${existing.id}`);
+    } else if (existing) {
+      await api('PUT', `/api/product-rates/${existing.id}`, { product: g.name, rate });
+    } else {
+      await api('POST', '/api/product-rates', { product: g.name, rate });
+    }
+    await loadProductRates();
+    refilterProductsGrid();
+    notify('Product rate saved');
+  } catch (e) { notify('Error: ' + e.message); refilterProductsGrid(); }
   showSaving(false);
 }
-
-// ── Product Rate report (Supreme Art Finance only) ────────────────
-// Hamza's own product → default-rate list. Same reports-group shape as
-// Imports: one pane, no sub-tabs.
-function openProductRatesPage() {
-  openReportsGroup('product-rates-group');
-  loadProductRates().then(renderProductRatesPage);
-}
-function renderProductRatesPage() {
-  const pane = document.getElementById('rt-product-rates');
-  if (!pane) return;
-  const rows = [...productRates].sort((a, b) => String(a.product).localeCompare(String(b.product)));
-  const body = rows.length
-    ? rows.map(r => `<tr>
-        <td style="padding:8px 10px;">${esc(r.product)}</td>
-        <td style="padding:8px 10px;text-align:right;font-weight:600;">${fmtRate(r.rate)}</td>
-        <td style="padding:8px 10px;font-size:11px;color:var(--text2);">${r.updated_by ? esc(r.updated_by) : ''}${r.updated_at ? ' &middot; ' + esc(fmtDMYT(r.updated_at)) : ''}</td>
-        <td style="padding:8px 10px;text-align:center;white-space:nowrap;">
-          <button class="btn btn-sm" onclick="openProductRateModal(${r.id})">Edit</button>
-          <button class="btn btn-sm btn-danger" onclick="deleteProductRate(${r.id})">Delete</button>
-        </td>
-      </tr>`).join('')
-    : `<tr><td colspan="4" style="text-align:center;color:var(--text3);font-style:italic;padding:16px;">No product rates yet.</td></tr>`;
-  pane.innerHTML = `
-    <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap;">
-      <h2 style="margin:0;font-size:20px;">Product Rate</h2>
-      <span style="color:var(--text2);font-size:12px;">Price per unit carton, by product. A job with no rate of its own suggests whatever's here.</span>
-      <button class="btn btn-sm btn-primary" style="margin-left:auto;" onclick="openProductRateModal()">+ Add Product Rate</button>
-    </div>
-    <table style="width:100%;border-collapse:collapse;font-size:13px;">
+// Every shipment across every job sharing this product name, newest
+// first. Job number opens that job's own card (jumping back to Jobs).
+function openProductHistoryModal(i) {
+  const g = __productGroupsCache[i];
+  if (!g) return;
+  const rows = [];
+  for (const j of g.jobs) {
+    const list = Array.isArray(j.deliveries) ? j.deliveries : [];
+    const r = effectiveRate(j);
+    list.forEach(d => {
+      const cartons = parseFloat(d && d.cartons) || 0;
+      rows.push({
+        jobId: j.id, client: j.client || '', date: (d && d.date) || '',
+        po: (d && d.po_no) || '', fbr: (d && d.fbr_no) || '',
+        invoice: deliveryChallanText(d), cartons, rate: r ? r.value : null,
+      });
+    });
+  }
+  rows.sort((a, b) => String(b.date).localeCompare(String(a.date)));
+  const body = rows.length ? rows.map(r => `<tr>
+    <td style="padding:6px 8px;">${esc(r.date)}</td>
+    <td style="padding:6px 8px;"><a href="#" onclick="event.preventDefault(); closeModal(); setMode('jobs'); setTimeout(()=>openEdit(${r.jobId}),50);">E-${r.jobId}</a></td>
+    <td style="padding:6px 8px;">${esc(r.client)}</td>
+    <td style="padding:6px 8px;">${esc(r.po)}</td>
+    <td style="padding:6px 8px;">${esc(r.fbr)}</td>
+    <td style="padding:6px 8px;">${esc(r.invoice)}</td>
+    <td style="text-align:right;padding:6px 8px;">${r.cartons.toLocaleString()}</td>
+    <td style="text-align:right;padding:6px 8px;">${r.rate != null ? fmtRate(r.rate) : '&mdash;'}</td>
+    <td style="text-align:right;padding:6px 8px;">${r.rate != null ? fmtRate(r.cartons * r.rate) : '&mdash;'}</td>
+  </tr>`).join('') : `<tr><td colspan="9" style="text-align:center;color:var(--text3);font-style:italic;padding:16px;">No shipments recorded yet.</td></tr>`;
+  openModal(`<div class="modal" onclick="event.stopPropagation()" style="max-width:900px;">
+    <h2 style="margin:0 0 4px;">${esc(g.name)}</h2>
+    <div style="font-size:12px;color:var(--text2);margin-bottom:12px;">Every shipment across every job with this product name.</div>
+    <div style="max-height:60vh;overflow:auto;">
+    <table style="width:100%;border-collapse:collapse;font-size:12px;">
       <thead><tr style="background:#f3f4f6;">
-        <th style="text-align:left;padding:8px 10px;border-bottom:1px solid var(--border);">Product</th>
-        <th style="text-align:right;padding:8px 10px;border-bottom:1px solid var(--border);">Rate / Carton</th>
-        <th style="text-align:left;padding:8px 10px;border-bottom:1px solid var(--border);">Last Updated</th>
-        <th style="padding:8px 10px;border-bottom:1px solid var(--border);"></th>
+        <th style="text-align:left;padding:6px 8px;">Date</th>
+        <th style="text-align:left;padding:6px 8px;">Job</th>
+        <th style="text-align:left;padding:6px 8px;">Company</th>
+        <th style="text-align:left;padding:6px 8px;">PO No.</th>
+        <th style="text-align:left;padding:6px 8px;">E-FBR No.</th>
+        <th style="text-align:left;padding:6px 8px;">Invoice No.</th>
+        <th style="text-align:right;padding:6px 8px;">Cartons</th>
+        <th style="text-align:right;padding:6px 8px;">Rate</th>
+        <th style="text-align:right;padding:6px 8px;">Revenue</th>
       </tr></thead>
       <tbody>${body}</tbody>
     </table>
-  `;
-}
-function openProductRateModal(id) {
-  const row = id ? productRates.find(r => r.id === id) : null;
-  openModal(`<div class="modal" onclick="event.stopPropagation()">
-    <h2>${row ? 'Edit' : 'Add'} Product Rate</h2>
-    <div class="form-group"><label class="form-label">Product Name *</label><input type="text" id="pr-modal-product" value="${row ? esc(row.product) : ''}" placeholder="e.g. 1kg Detergent Carton"></div>
-    <div class="form-group"><label class="form-label">Rate / Carton *</label><input type="number" id="pr-modal-rate" min="0" step="any" value="${row ? esc(String(row.rate)) : ''}" placeholder="e.g. 12.50"></div>
-    <div style="font-size:12px;color:var(--text2);">Matches jobs by name, case-insensitive. Editing this never changes a job that's already been priced — only what a not-yet-priced job with this name suggests.</div>
-    <div class="modal-actions">
-      <button class="btn" onclick="closeModal()">Cancel</button>
-      <button class="btn btn-primary" onclick="saveProductRate(${id || 'null'})">${row ? 'Save' : 'Add'}</button>
     </div>
+    <div class="modal-actions"><button class="btn" onclick="closeModal()">Close</button></div>
   </div>`);
-}
-async function saveProductRate(id) {
-  const product = ((document.getElementById('pr-modal-product')||{}).value || '').trim();
-  const rateStr = ((document.getElementById('pr-modal-rate')||{}).value || '').trim();
-  const rate = parseFloat(rateStr);
-  if (!product) { await alertDialog({ title: 'Enter a product name', kind: 'warn' }); return; }
-  if (!Number.isFinite(rate) || rate < 0) { await alertDialog({ title: 'Enter a valid rate', kind: 'warn' }); return; }
-  showSaving(true);
-  try {
-    if (id) await api('PUT', `/api/product-rates/${id}`, { product, rate });
-    else    await api('POST', '/api/product-rates', { product, rate });
-    await loadProductRates();
-    closeModal();
-    renderProductRatesPage();
-    render(); // job tiles may now show this product's suggested rate
-    notify('Product Rate saved');
-  } catch (e) { notify('Error: ' + e.message); }
-  showSaving(false);
-}
-async function deleteProductRate(id) {
-  const row = productRates.find(r => r.id === id);
-  const ok = await confirmDialog({
-    title: `Delete rate for "${row ? row.product : 'this product'}"?`,
-    message: 'Jobs already priced keep their own rate — deleting this only stops it being suggested for a new, not-yet-priced job with this name.',
-    danger: true, confirmText: 'Delete',
-  });
-  if (!ok) return;
-  showSaving(true);
-  try {
-    await api('DELETE', `/api/product-rates/${id}`);
-    await loadProductRates();
-    renderProductRatesPage();
-    render();
-    notify('Product Rate deleted');
-  } catch (e) { notify('Error: ' + e.message); }
-  showSaving(false);
 }
 
 // ── Company Settings (Supreme Art Finance only) ────────────────────
@@ -20131,13 +20205,31 @@ async function recordDelivery(jobId) {
   const cartonsN = parseFloat(cartons);
   if (!Number.isFinite(cartonsN) || cartonsN <= 0) { await alertDialog({ title: 'Enter delivery cartons', kind: 'warn' }); return; }
   if (!date) { await alertDialog({ title: 'Pick a delivery date', kind: 'warn' }); return; }
+  // Rate/Tax fields only exist in the DOM for whoever holds delivery_write
+  // (see showPricingFields in deliveriesSection) — everyone else's form
+  // simply has no #deliv-rate/#deliv-tax to read, so this rides along
+  // silently as undefined and the server leaves pricing untouched.
+  const rateEl = document.getElementById('deliv-rate');
+  const taxEl  = document.getElementById('deliv-tax');
+  let rate, taxPct;
+  if (rateEl || taxEl) {
+    const rateStr = ((rateEl||{}).value || '').trim();
+    const taxStr  = ((taxEl||{}).value  || '').trim();
+    rate = rateStr === '' ? null : parseFloat(rateStr);
+    if (rate !== null && (!Number.isFinite(rate) || rate < 0)) { await alertDialog({ title: 'Rate must be a non-negative number', kind: 'warn' }); return; }
+    taxPct = parseFloat(taxStr);
+    if (!Number.isFinite(taxPct) || taxPct < 0) { await alertDialog({ title: 'Sale Tax % must be a non-negative number', kind: 'warn' }); return; }
+  }
   showSaving(true);
   try {
     // Server keeps delqty in sync as the running sum of cartons. PO No.,
     // Batch No. and FBR No. ride per-entry so the Jobs Report can join
     // every shipment's PO / batch / tax invoice number across a job that
-    // was split.
-    const updated = await api('POST', `/api/jobs/${jobId}/deliveries`, { cartons, date, notes, po_no: poNo, batch_no: batchNo, fbr_no: fbrNo });
+    // was split. rate/tax_pct (when present) update the job's own pricing
+    // in the same request — recording a delivery is now what saves it.
+    const body = { cartons, date, notes, po_no: poNo, batch_no: batchNo, fbr_no: fbrNo };
+    if (rateEl || taxEl) { body.rate = rate; body.tax_pct = taxPct; }
+    const updated = await api('POST', `/api/jobs/${jobId}/deliveries`, body);
     const ix = jobs.findIndex(x => x.id === jobId);
     if (ix >= 0) jobs[ix] = updated;
     closeModal(); render(); notify('Delivery recorded');
@@ -22495,20 +22587,17 @@ function lockJobCardExceptMachineAndParticulars() {
 }
 
 // Finance's view-only job card: same approach as the Station manager lock
-// above, but the only live regions are Deliveries (.jc-deliveries) and
-// Pricing (.jc-pricing) — their inputs and buttons keep working.
-// Modal-actions (Close) stay live. A MutationObserver locks anything the
-// card adds later (e.g. a re-rendered particulars table). Note:
-// pricingSection() only renders live inputs for someone who can record
-// deliveries in the first place (everyone else gets plain read-only text,
-// nothing to lock) — this exemption just has to not re-lock them.
+// above, but the only live region is Deliveries (.jc-deliveries) — Rate/
+// Tax now ride inside that same form (see deliveriesSection's
+// showPricingFields) rather than a separate .jc-pricing box. Modal-
+// actions (Close) stay live. A MutationObserver locks anything the card
+// adds later (e.g. a re-rendered particulars table).
 let _finLockObserver = null;
 function lockJobCardExceptDeliveries() {
   const root = document.querySelector('.job-edit-modal');
   if (!root) return;
   const lockOne = el => {
     if (el.closest('.jc-deliveries')) return;
-    if (el.closest('.jc-pricing')) return;
     if (el.closest('.modal-actions')) return;
     if (el.tagName === 'BUTTON' || el.tagName === 'SELECT') { el.disabled = true; return; }
     if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {

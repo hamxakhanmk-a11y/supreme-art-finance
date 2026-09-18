@@ -6358,6 +6358,24 @@ app.post('/api/jobs/:id/deliveries', requireDeliveryWriter, async (req, res) => 
     if (!Number.isFinite(cartonsN) || cartonsN <= 0) {
       return res.status(400).json({ error: 'Delivery cartons must be a positive number.' });
     }
+    // Rate/tax_pct optionally ride along with the delivery (the client's
+    // Rate/Tax fields only render for a delivery_write holder — see
+    // showPricingFields in deliveriesSection). Both keys must be present
+    // together for pricing to be touched at all, so a manager-deliver-
+    // style caller that never sends them leaves rate/tax_pct untouched.
+    const hasPricing = Object.prototype.hasOwnProperty.call(req.body, 'rate') || Object.prototype.hasOwnProperty.call(req.body, 'tax_pct');
+    let rate = null, taxPct = null;
+    if (hasPricing) {
+      const rateRaw = req.body.rate;
+      rate = (rateRaw === null || rateRaw === undefined || rateRaw === '') ? null : Number(rateRaw);
+      if (rate !== null && (!Number.isFinite(rate) || rate < 0)) {
+        return res.status(400).json({ error: 'Rate must be a non-negative number.' });
+      }
+      taxPct = Number(req.body.tax_pct);
+      if (!Number.isFinite(taxPct) || taxPct < 0) {
+        return res.status(400).json({ error: 'Sale Tax % must be a non-negative number.' });
+      }
+    }
     const rows = await sql`SELECT * FROM jobs WHERE id=${id} AND deleted_at IS NULL`;
     if (!rows.length) return res.status(404).json({ error: 'Job not found' });
     const job = rows[0];
@@ -6382,13 +6400,17 @@ app.post('/api/jobs/:id/deliveries', requireDeliveryWriter, async (req, res) => 
     // the running total against the booked qty for context.
     const { deliveries, delqty, stage_index, stages, log, entry, nextTotal, bookedQty } =
       computeDeliveryUpdate(job, { cartonsN, date, notes, poNo, batchNo, fbrNo, byEmail: req.user?.email });
+    const nextRate   = hasPricing ? rate   : job.rate;
+    const nextTaxPct = hasPricing ? taxPct : job.tax_pct;
     const updated = await sql`
       UPDATE jobs
          SET deliveries  = ${JSON.stringify(deliveries)},
              delqty      = ${delqty},
              stage_index = ${stage_index},
              stages      = ${JSON.stringify(stages)},
-             log         = ${JSON.stringify(log)}
+             log         = ${JSON.stringify(log)},
+             rate        = ${nextRate},
+             tax_pct     = ${nextTaxPct}
        WHERE id = ${id}
        RETURNING *
     `;
@@ -6396,8 +6418,8 @@ app.post('/api/jobs/:id/deliveries', requireDeliveryWriter, async (req, res) => 
       action: 'job.delivery.add',
       entityType: 'job',
       entityId: id,
-      summary: `Recorded delivery of ${cartonsN.toLocaleString()} cartons for Job E-${id} (total ${nextTotal.toLocaleString()}${bookedQty ? '/' + bookedQty.toLocaleString() : ''})`,
-      metadata: { cartons: entry.cartons, date, total: nextTotal, booked: bookedQty },
+      summary: `Recorded delivery of ${cartonsN.toLocaleString()} cartons for Job E-${id} (total ${nextTotal.toLocaleString()}${bookedQty ? '/' + bookedQty.toLocaleString() : ''})${hasPricing ? `; pricing set: rate ${rate === null ? '—' : rate}, tax ${taxPct}%` : ''}`,
+      metadata: { cartons: entry.cartons, date, total: nextTotal, booked: bookedQty, rate: hasPricing ? rate : undefined, tax_pct: hasPricing ? taxPct : undefined },
     });
     res.json(updated[0]);
   } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
