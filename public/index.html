@@ -20560,10 +20560,14 @@ function deliveriesSection(j, opts) {
   const showPricingFields = !managerMode && canRecordDelivery();
   const addForm = canAddDelivery
     ? `<div class="deliv-add" style="margin-top:10px;padding:10px 12px;background:#f9fafb;border:1px dashed #d1d5db;border-radius:8px;">
-        <div style="display:grid;grid-template-columns:${isShadeCard ? '1fr 1fr' : '1fr 1fr 1fr 1fr'};gap:8px;align-items:end;">
+        <div style="display:grid;grid-template-columns:${isShadeCard ? '1fr 1fr 1fr' : '1fr 1fr 1fr 1fr 1fr'};gap:8px;align-items:end;">
           <div style="min-width:0;">
             <label style="font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:0.4px;display:block;margin-bottom:2px;">${countLabel} *</label>
             <input type="number" id="deliv-cartons" min="1" step="any" value="${cartonsPrefill}" placeholder="e.g. 50" title="Pre-filled from Ready Cartons Qty minus what's already shipped — edit if you're shipping a different amount." style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;box-sizing:border-box;">
+          </div>
+          <div style="min-width:0;">
+            <label style="font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:0.4px;display:block;margin-bottom:2px;">Cartons/Packets</label>
+            <div title="Read-only — this is the Packets/Cartons figure the Pasting/Ready to Deliver station wrote, not something entered here." style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;box-sizing:border-box;background:#f3f4f6;color:var(--text2);font-weight:600;">${cartonsPackets > 0 ? cartonsPackets.toLocaleString() : '&mdash;'}</div>
           </div>
           <div style="min-width:0;">
             <label style="font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:0.4px;display:block;margin-bottom:2px;">Date *</label>
