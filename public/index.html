@@ -2987,6 +2987,11 @@ td.jc-details-cell > input[type="text"] { padding-right: 20px; }
         <div class="report-card-title">Jobs Report</div>
         <div class="report-card-desc">Tabular log of every delivered job — date, company, PO number, quantities, packets consumed, paper, machine, coatings. With print + Excel export.</div>
       </button>
+      <button class="report-card delivery-write-only-report" onclick="openSaleReportPage()">
+        <div class="report-card-icon">&#128176;</div>
+        <div class="report-card-title">Sale Report</div>
+        <div class="report-card-desc">Every delivered job with full invoicing detail — PO/Batch/E-FBR/Invoice No., quantities, paper/machine/coatings, Rate, Sale Tax %, and Company/Destination/NTN. With totals row, print + Excel export.</div>
+      </button>
     </div>
   </div>
 
@@ -3042,6 +3047,22 @@ td.jc-details-cell > input[type="text"] { padding-right: 20px; }
       <main class="reports-content">
         <div id="rt-jobs-report" class="rt-pane"></div>
         <div id="rt-prod-report" class="rt-pane" style="display:none;"></div>
+      </main>
+    </div>
+  </div>
+
+  <!-- Sale Report group — single pane, no sub-tabs (same shape as Imports). -->
+  <div id="sale-report-group" class="reports-group" style="display:none;">
+    <div class="reports-layout">
+      <aside class="reports-sidebar">
+        <button class="rsb-back" onclick="exitReportsGroup()" title="Back to Reports">&larr; Back</button>
+        <div class="rsb-section">Sale Report</div>
+        <button class="rsb-item active" data-rt="sale-report">
+          <span class="rsb-icon">&#128176;</span> Sale Report
+        </button>
+      </aside>
+      <main class="reports-content">
+        <div id="rt-sale-report" class="rt-pane"></div>
       </main>
     </div>
   </div>
@@ -12235,6 +12256,381 @@ function printJobsReport() {
           <th ${tdL}>Coatings</th>
         </tr>
         ${tableRows}
+      </table>
+    </div>`;
+  const area = document.getElementById('print-area');
+  area.innerHTML = html;
+  const imgs = Array.from(area.querySelectorAll('img'));
+  const waits = imgs.map(img => img.complete ? Promise.resolve() : new Promise(res => { img.onload = img.onerror = () => res(); }));
+  Promise.race([Promise.all(waits), new Promise(res => setTimeout(res, 1500))]).then(() => {
+    window.print();
+    setTimeout(() => { area.innerHTML = ''; }, 500);
+  });
+}
+
+// ── Sale Report (Supreme Art Finance only) ─────────────────────────
+// One row per delivered job with full invoicing detail — the Jobs Report's
+// columns (PO/Batch/quantities/paper/machine/coatings) plus E-FBR No.,
+// Rate, Sale Tax %, and Company/Destination/NTN. Deliberately independent
+// of buildJobsReportRows()/jobsReportState — same per-job computations,
+// but no Linked-Jobs / MIL-group row merging (each job keeps its own Rate
+// and company info, which a merged row can't cleanly represent) and no
+// bulk-select/created-mode toggle. Gated by delivery_write, same as
+// Company Settings and the Product Rate tab — this is the one report that
+// shows pricing.
+const saleReportState = { client: '', dfrom: '', dto: '', q: '' };
+
+function openSaleReportPage() {
+  if (!canRecordDelivery()) { notify('Sale Report is not available for your role.'); return; }
+  openReportsGroup('sale-report-group');
+  openSaleReport();
+}
+function openSaleReport() {
+  const pane = document.getElementById('rt-sale-report');
+  if (!pane) return;
+  const lastStageIdx = STAGES.length - 1;
+  const scopeJobs = jobs.filter(j => (j.stage_index || 0) === lastStageIdx || (Array.isArray(j.deliveries) && j.deliveries.length));
+  const clients = [...new Set(scopeJobs.map(j => j.client).filter(Boolean))].sort((a, b) => String(a).localeCompare(String(b)));
+  pane.innerHTML = `
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap;">
+      <h2 style="margin:0;font-size:20px;">Sale Report</h2>
+      <span style="color:var(--text2);font-size:12px;">Delivered jobs — quantities, paper/machine/coatings, Rate, Sale Tax %, and Company/Destination/NTN.</span>
+      <div style="margin-left:auto;display:flex;gap:8px;">
+        <button class="btn btn-sm" onclick="exportSaleReport()">&#128202; Export to Excel</button>
+        <button class="btn btn-sm" onclick="printSaleReport()">&#128424; Print Report</button>
+      </div>
+    </div>
+    <div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:14px;margin-bottom:14px;display:flex;flex-wrap:wrap;gap:14px;align-items:flex-end;">
+      <div>
+        <div class="dash-flbl">Search (Job No. / Name)</div>
+        <input class="filter" type="text" id="sr-q" value="${esc(saleReportState.q)}" placeholder="e.g. 59 or FENBRO" oninput="setSrQ(this.value)" style="min-width:180px;">
+      </div>
+      <div>
+        <div class="dash-flbl">From</div>
+        <input class="filter" type="date" id="sr-dfrom" value="${saleReportState.dfrom}" onchange="setSrDFrom(this.value)">
+      </div>
+      <div>
+        <div class="dash-flbl">To</div>
+        <input class="filter" type="date" id="sr-dto" value="${saleReportState.dto}" onchange="setSrDTo(this.value)">
+      </div>
+      <div>
+        <div class="dash-flbl">Company</div>
+        <select class="filter" id="sr-client" onchange="setSrClient(this.value)">
+          <option value="">All companies</option>
+          ${clients.map(c => `<option value="${esc(c)}"${saleReportState.client===c?' selected':''}>${esc(c)}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+    <div id="sr-content" style="font-size:12px;"></div>
+  `;
+  renderSaleReport();
+}
+function setSrDFrom(v)  { saleReportState.dfrom = v;  renderSaleReport(); }
+function setSrDTo(v)    { saleReportState.dto = v;    renderSaleReport(); }
+function setSrQ(v)      { saleReportState.q = v;      renderSaleReport(); }
+function setSrClient(v) { saleReportState.client = v; renderSaleReport(); }
+
+// Build the rows — same shape/filters as buildJobsReportRows() (delivered
+// stage OR any recorded shipment, date range against the Delivered stage
+// timestamp), plus E-FBR No. (joined per shipment like Invoice No.) and
+// pricing: Rate/Unit from effectiveRate(), Sale Tax % from job.tax_pct
+// (defaults 18), and the two Amount columns computed against this job's
+// shipped cartons — "Rate w/o Sale Tax" / "Rate w/ Sale Tax" are really
+// the net/gross line totals, which is what makes them summable in the
+// totals row below.
+function buildSaleReportRows() {
+  const { client, dfrom, dto, q } = saleReportState;
+  const lastStageIdx = STAGES.length - 1;
+  const qNorm  = String(q || '').trim().toLowerCase();
+  const qId    = qNorm.replace(/^e-?/, '');
+  const qIsNum = /^\d+$/.test(qId);
+  const out = [];
+  for (const j of jobs) {
+    const deliveriesList = Array.isArray(j.deliveries) ? j.deliveries : [];
+    const hasAnyShipment = deliveriesList.length > 0;
+    if ((j.stage_index || 0) !== lastStageIdx && !hasAnyShipment) continue;
+    if (client && j.client !== client) continue;
+    if (qNorm) {
+      const idHit   = qIsNum && String(j.id) === qId;
+      const nameHit = String(j.name || '').toLowerCase().includes(qNorm);
+      if (!idHit && !nameHit) continue;
+    }
+    const stageRec = j.stages && j.stages[lastStageIdx];
+    const stampFromStage = stageRec && stageRec.time ? String(fmtStageTime(stageRec.time)).split(' ')[0] : '';
+    const ledgerDates = deliveriesList.map(d => d && d.date ? fmtDMY(d.date) : '').filter(Boolean);
+    const deliveredAt = ledgerDates.length ? ledgerDates.join(' | ') : stampFromStage;
+    if (dfrom || dto) {
+      let refMs = NaN;
+      if (stageRec && stageRec.at) refMs = new Date(stageRec.at).getTime();
+      if (!isFinite(refMs) && stageRec && stageRec.time) {
+        const m = String(fmtStageTime(stageRec.time)).match(/^(\d{2})\/(\d{2})\/(\d{4})(?:\s+(\d{2}):(\d{2}))?/);
+        if (m) refMs = new Date(+m[3], +m[2]-1, +m[1], +(m[4]||0), +(m[5]||0)).getTime();
+      }
+      if (!isFinite(refMs) && deliveriesList.length) {
+        const stamps = deliveriesList.map(d => (d && d.at) ? new Date(d.at).getTime() : (d && d.date ? new Date(d.date + 'T12:00:00').getTime() : NaN)).filter(n => isFinite(n));
+        if (stamps.length) refMs = Math.max(...stamps);
+      }
+      if (!isFinite(refMs)) continue;
+      if (dfrom && refMs < new Date(dfrom + 'T00:00:00').getTime()) continue;
+      if (dto   && refMs > new Date(dto   + 'T23:59:59').getTime()) continue;
+    }
+    let packets = 0;
+    const pktFromForm = parseFloat(j.particulars && j.particulars.quantity_of_packets);
+    if (Number.isFinite(pktFromForm) && pktFromForm > 0) {
+      packets = pktFromForm;
+    } else {
+      const sheets = parseFloat(j.sheets) || 0;
+      const ps     = packetSize(j.paper || '');
+      if (sheets && ps) packets = sheets / ps;
+    }
+    const cartonQtyNum = parseFloat(j.cartonqty);
+    const readyForWastage = earlyReadyTotal(j);
+    const wastage = (Number.isFinite(cartonQtyNum) && readyForWastage > 0) ? (cartonQtyNum - readyForWastage) : null;
+    const readyQty = Math.max(0, (readyCartonsTotal(j) || 0) - (totalDeliveredCartons(j) || 0));
+    const invItem = j.inventory_item_id ? inventory.find(i => i.id === j.inventory_item_id) : null;
+    const paperTypesArr = j.particulars && Array.isArray(j.particulars.paper_types) ? j.particulars.paper_types : [];
+    const paper = invItem
+      ? `${invItem.paper_type}${invItem.size ? ' ' + invItem.size : ''}${invItem.gsm ? ' ' + invItem.gsm + 'gsm' : ''}`
+      : (paperTypesArr.length ? paperTypesArr.join(', ') : (j.paper || ''));
+    const joinRefs = (key, fallback) => {
+      const vals = deliveriesList.map(d => (d && d[key] ? String(d[key]).trim() : '')).filter(Boolean);
+      if (vals.length) return vals.join(' | ');
+      return String(fallback || '').trim();
+    };
+    const poNo    = joinRefs('po_no', j.ref);
+    const batchNo = joinRefs('batch_no', j.bno);
+    const fbrNo   = joinRefs('fbr_no', '');
+    const challan = deliveriesList.map(d => deliveryChallanText(d).trim()).filter(Boolean).join(' | ');
+    const shippedCartons = totalDeliveredCartons(j);
+    const rEff = effectiveRate(j);
+    const rate = rEff ? rEff.value : null;
+    const taxPct = (j.tax_pct !== null && j.tax_pct !== undefined && j.tax_pct !== '') ? Number(j.tax_pct) : 18;
+    const amountExTax  = rate !== null ? rate * shippedCartons : null;
+    const amountIncTax = amountExTax !== null ? amountExTax * (1 + taxPct / 100) : null;
+    const cs = companySettingsFor(j.client);
+    out.push({
+      id: j.id, idDisplay: 'E-' + j.id, name: j.name || '',
+      deliveredAt, client: j.client || '',
+      poNo, batchNo, fbrNo, challan,
+      poQty: j.qty || '', cartonQty: j.cartonqty || '', deliveredQty: j.delqty || '',
+      wastage, readyQty, packets, paper,
+      machine: j.machine || '', coatings: Array.isArray(j.coatings) ? j.coatings.join(', ') : '',
+      isShadeCard: !!j.is_shade_card, isPartial: isPartialDelivery(j),
+      rate, taxPct, amountExTax, amountIncTax,
+      destination: (cs && cs.destination) || '', ntn: (cs && cs.ntn) || '',
+    });
+  }
+  out.sort((a, b) => a.id - b.id);
+  return out;
+}
+function renderSaleReport() {
+  const rows = buildSaleReportRows();
+  const el = document.getElementById('sr-content');
+  if (!el) return;
+  if (!rows.length) { el.innerHTML = '<div class="empty">No delivered jobs match these filters.</div>'; return; }
+  const fmt = n => !n && n !== 0 ? '' : (Number.isInteger(+n) ? (+n).toLocaleString() : (+n).toFixed(2));
+  const td  = 'style="padding:8px 10px;"';
+  const tdR = 'style="padding:8px 10px;text-align:right;"';
+  const wrapTd = (maxW) => `style="padding:8px 10px;max-width:${maxW}px;white-space:normal;word-break:break-word;font-size:11.5px;line-height:1.5;"`;
+  const totals = rows.reduce((a, r) => ({
+    poQty:        a.poQty        + (parseFloat(String(r.poQty).replace(/[^0-9.\-]/g, '')) || 0),
+    cartonQty:    a.cartonQty    + (+r.cartonQty || 0),
+    deliveredQty: a.deliveredQty + (+r.deliveredQty || 0),
+    wastage:      a.wastage      + (r.wastage == null ? 0 : (+r.wastage || 0)),
+    readyQty:     a.readyQty     + (+r.readyQty || 0),
+    packets:      a.packets      + (+r.packets || 0),
+    amountExTax:  a.amountExTax  + (r.amountExTax  || 0),
+    amountIncTax: a.amountIncTax + (r.amountIncTax || 0),
+  }), { poQty: 0, cartonQty: 0, deliveredQty: 0, wastage: 0, readyQty: 0, packets: 0, amountExTax: 0, amountIncTax: 0 });
+  const tbody = rows.map(r => {
+    const deliveredStyle = r.isPartial ? 'color:#ca8a04;font-weight:700;' : '';
+    return `<tr class="row-hover-red cv-summary-row" style="border-bottom:1px solid var(--border);cursor:pointer;" onclick="setMode('jobs'); setTimeout(()=>openEdit(${r.id}),50);" title="Open this job's card">
+      <td ${td}>${esc(r.idDisplay)}</td>
+      <td ${td}>${esc(r.name)}${r.isShadeCard ? ' <span style="display:inline-block;background:#dcfce7;color:#166534;font-weight:800;font-size:9px;letter-spacing:0.04em;text-transform:uppercase;padding:1px 6px;border-radius:999px;vertical-align:middle;white-space:nowrap;">&#127912; Shade Card</span>' : ''}</td>
+      <td ${wrapTd(160)}>${esc(r.deliveredAt)}</td>
+      <td ${wrapTd(140)}>${esc(r.poNo)}</td>
+      <td ${wrapTd(120)}>${esc(r.batchNo)}</td>
+      <td ${wrapTd(140)}>${esc(r.fbrNo)}</td>
+      <td ${wrapTd(140)}>${esc(r.challan)}</td>
+      <td ${tdR}>${esc(r.poQty)}</td>
+      <td ${tdR}>${esc(r.cartonQty)}</td>
+      <td style="padding:8px 10px;text-align:right;${deliveredStyle}">${esc(r.deliveredQty)}${(r.isShadeCard && r.deliveredQty !== '') ? ' copies' : ''}</td>
+      <td ${tdR}>${r.wastage === null ? '&mdash;' : fmt(r.wastage)}</td>
+      <td style="padding:8px 10px;text-align:right;font-weight:600;color:${r.readyQty > 0 ? '#166534' : 'var(--text2)'};">${fmt(r.readyQty)}</td>
+      <td ${tdR}>${fmt(r.packets)}</td>
+      <td ${td}>${esc(r.paper)}</td>
+      <td ${td}>${esc(r.machine)}</td>
+      <td ${td}>${esc(r.coatings)}</td>
+      <td ${tdR}>${r.rate !== null ? fmtRate(r.rate) : '&mdash;'}</td>
+      <td ${tdR}>${r.amountExTax !== null ? fmtRate(r.amountExTax) : '&mdash;'}</td>
+      <td ${tdR}>${fmt(r.taxPct)}%</td>
+      <td ${tdR}>${r.amountIncTax !== null ? fmtRate(r.amountIncTax) : '&mdash;'}</td>
+      <td ${td}>${esc(r.client)}</td>
+      <td ${td}>${esc(r.destination)}</td>
+      <td ${td}>${esc(r.ntn)}</td>
+    </tr>`;
+  }).join('');
+  const th  = 'style="text-align:left;padding:8px 10px;font-size:11px;text-transform:uppercase;letter-spacing:0.04em;color:var(--text);font-weight:700;"';
+  const thR = 'style="text-align:right;padding:8px 10px;font-size:11px;text-transform:uppercase;letter-spacing:0.04em;color:var(--text);font-weight:700;"';
+  el.innerHTML = `
+    <div style="font-size:11px;color:var(--text2);margin-bottom:6px;">${rows.length} job${rows.length===1?'':'s'} in window</div>
+    <div class="report-scroll-wrap">
+    <table class="ss-table" style="width:100%;border-collapse:collapse;font-size:13px;min-width:max-content;">
+      <thead>
+        <tr style="background:var(--bg2);">
+          <th ${th}>Job ID</th>
+          <th ${th}>Job Name</th>
+          <th ${th}>Delivered</th>
+          <th ${th}>PO No.</th>
+          <th ${th}>Batch No.</th>
+          <th ${th}>E-FBR No.</th>
+          <th ${th}>Invoice No.</th>
+          <th ${thR}>PO Qty</th>
+          <th ${thR}>Unit Carton Qty</th>
+          <th ${thR}>Delivered Qty</th>
+          <th ${thR}>Wastage</th>
+          <th ${thR}>Ready Qty</th>
+          <th ${thR}>Packets</th>
+          <th ${th}>Paper</th>
+          <th ${th}>Machine</th>
+          <th ${th}>Coatings</th>
+          <th ${thR}>Rate / Unit</th>
+          <th ${thR}>Rate w/o Sale Tax</th>
+          <th ${thR}>Sale Tax %</th>
+          <th ${thR}>Rate w/ Sale Tax</th>
+          <th ${th}>Company</th>
+          <th ${th}>Destination</th>
+          <th ${th}>NTN</th>
+        </tr>
+      </thead>
+      <tbody>${tbody}</tbody>
+      <tfoot>
+        <tr style="background:var(--bg2);font-weight:700;border-top:2px solid var(--border);">
+          <td colspan="2" style="padding:8px 10px;">${rows.length} job${rows.length===1?'':'s'}</td>
+          <td colspan="5" style="padding:8px 10px;text-align:right;color:var(--text2);">Total</td>
+          <td style="padding:8px 10px;text-align:right;">${fmt(totals.poQty)}</td>
+          <td style="padding:8px 10px;text-align:right;">${fmt(totals.cartonQty)}</td>
+          <td style="padding:8px 10px;text-align:right;">${fmt(totals.deliveredQty)}</td>
+          <td style="padding:8px 10px;text-align:right;">${fmt(totals.wastage)}</td>
+          <td style="padding:8px 10px;text-align:right;">${fmt(totals.readyQty)}</td>
+          <td style="padding:8px 10px;text-align:right;">${fmt(totals.packets)}</td>
+          <td colspan="3"></td>
+          <td></td>
+          <td style="padding:8px 10px;text-align:right;">${fmtRate(totals.amountExTax)}</td>
+          <td></td>
+          <td style="padding:8px 10px;text-align:right;">${fmtRate(totals.amountIncTax)}</td>
+          <td colspan="3"></td>
+        </tr>
+      </tfoot>
+    </table>
+    </div>`;
+}
+// Export the Sale Report to .xlsx.
+async function exportSaleReport() {
+  try { await ensureXlsx(); } catch (e) { notify(e.message); return; }
+  const rows = buildSaleReportRows();
+  if (!rows.length) { notify('Nothing to export — empty filter result.'); return; }
+  const header = ['Job ID', 'Job Name', 'Delivered', 'PO No.', 'Batch No.', 'E-FBR No.', 'Invoice No.',
+    'PO Qty', 'Unit Carton Qty', 'Delivered Qty', 'Wastage', 'Ready Qty', 'Packets Consumed', 'Paper', 'Machine', 'Coatings',
+    'Rate / Unit', 'Rate w/o Sale Tax', 'Sale Tax %', 'Rate w/ Sale Tax', 'Company', 'Destination', 'NTN'];
+  const aoa = [header];
+  for (const r of rows) {
+    let deliveredCell = r.isShadeCard && r.deliveredQty !== '' ? `${r.deliveredQty} copies` : r.deliveredQty;
+    if (r.isPartial && r.deliveredQty) deliveredCell = `${deliveredCell} (PARTIAL)`;
+    const nameCell = r.isShadeCard ? `${r.name} (Shade Card)` : r.name;
+    aoa.push([
+      r.idDisplay, nameCell, r.deliveredAt, r.poNo, r.batchNo || '', r.fbrNo || '', r.challan || '',
+      r.poQty, r.cartonQty, deliveredCell, r.wastage === null ? '' : r.wastage, r.readyQty,
+      r.packets ? +r.packets.toFixed(2) : '', r.paper, r.machine, r.coatings,
+      r.rate === null ? '' : r.rate,
+      r.amountExTax === null ? '' : +r.amountExTax.toFixed(2),
+      r.taxPct,
+      r.amountIncTax === null ? '' : +r.amountIncTax.toFixed(2),
+      r.client, r.destination, r.ntn,
+    ]);
+  }
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws['!cols'] = header.map((h, i) => ({
+    wch: Math.max(h.length, ...aoa.slice(1).map(r => String(r[i] ?? '').length)) + 2
+  }));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Sale Report');
+  const stamp = localDateISO();
+  const tag = saleReportState.client ? `-${saleReportState.client.replace(/\s+/g,'-').toLowerCase()}` : '';
+  XLSX.writeFile(wb, `supreme-art-sale-report${tag}-${stamp}.xlsx`);
+  notify('Exported!');
+}
+// Print the Sale Report — A4 landscape.
+function printSaleReport() {
+  const rows = buildSaleReportRows();
+  if (!rows.length) { notify('Nothing to print — empty filter result.'); return; }
+  const tdL = 'style="border:1px solid #000;padding:4px;"';
+  const tdR = 'style="border:1px solid #000;padding:4px;text-align:right;"';
+  const fmt = n => !n && n !== 0 ? '' : (Number.isInteger(+n) ? (+n).toLocaleString() : (+n).toFixed(2));
+  const tableRows = rows.map(r => {
+    const deliveredStyle = r.isPartial ? 'color:#ca8a04;font-weight:bold;' : '';
+    return `<tr>
+    <td ${tdL}>${esc(r.idDisplay)}</td>
+    <td ${tdL}>${esc(r.name)}${r.isShadeCard ? ' <b>(Shade Card)</b>' : ''}</td>
+    <td ${tdL}>${esc(r.deliveredAt)}</td>
+    <td ${tdL}>${esc(r.poNo)}</td>
+    <td ${tdL}>${esc(r.batchNo || '')}</td>
+    <td ${tdL}>${esc(r.fbrNo || '')}</td>
+    <td ${tdL}>${esc(r.challan || '')}</td>
+    <td ${tdR}>${esc(r.poQty)}</td>
+    <td ${tdR}>${esc(r.cartonQty)}</td>
+    <td style="border:1px solid #000;padding:4px;text-align:right;${deliveredStyle}">${esc(r.deliveredQty)}${(r.isShadeCard && r.deliveredQty !== '') ? ' copies' : ''}</td>
+    <td ${tdR}>${r.wastage === null ? '—' : fmt(r.wastage)}</td>
+    <td ${tdR}>${fmt(r.readyQty)}</td>
+    <td ${tdR}>${fmt(r.packets)}</td>
+    <td ${tdL}>${esc(r.paper)}</td>
+    <td ${tdL}>${esc(r.machine)}</td>
+    <td ${tdL}>${esc(r.coatings)}</td>
+    <td ${tdR}>${r.rate !== null ? fmtRate(r.rate) : '—'}</td>
+    <td ${tdR}>${r.amountExTax !== null ? fmtRate(r.amountExTax) : '—'}</td>
+    <td ${tdR}>${fmt(r.taxPct)}%</td>
+    <td ${tdR}>${r.amountIncTax !== null ? fmtRate(r.amountIncTax) : '—'}</td>
+    <td ${tdL}>${esc(r.client)}</td>
+    <td ${tdL}>${esc(r.destination)}</td>
+    <td ${tdL}>${esc(r.ntn)}</td>
+  </tr>`;
+  }).join('');
+  const totals = rows.reduce((a, r) => ({
+    amountExTax:  a.amountExTax  + (r.amountExTax  || 0),
+    amountIncTax: a.amountIncTax + (r.amountIncTax || 0),
+  }), { amountExTax: 0, amountIncTax: 0 });
+  const html = `
+    <style>@media print { @page { size: A4 landscape; margin: 0.3in; } }</style>
+    <div style="font-family:Arial,sans-serif;color:#000;">
+      <div style="display:flex;align-items:center;gap:12px;border-bottom:2px solid #000;padding-bottom:6px;margin-bottom:8px;">
+        <img src="/logo.png" style="height:48px;" onerror="this.style.display='none'">
+        <div>
+          <div style="font-size:14pt;font-weight:bold;">Supreme Art.pvt</div>
+          <div style="font-size:10pt;">Sale Report</div>
+        </div>
+        <div style="margin-left:auto;font-size:8pt;text-align:right;">
+          <div><b>From:</b> ${esc(fmtDMY(saleReportState.dfrom) || '(any)')} &nbsp; <b>To:</b> ${esc(fmtDMY(saleReportState.dto) || '(any)')}</div>
+          <div><b>Company:</b> ${esc(saleReportState.client || 'All')} &nbsp; <b>Jobs:</b> ${rows.length}</div>
+          <div>Generated: ${fmtDMYT(new Date())}</div>
+        </div>
+      </div>
+      <table style="width:100%;font-size:7pt;border:1px solid #000;border-collapse:collapse;">
+        <tr style="background:#eee;">
+          <th ${tdL}>Job ID</th><th ${tdL}>Job Name</th><th ${tdL}>Delivered</th><th ${tdL}>PO No.</th><th ${tdL}>Batch No.</th><th ${tdL}>E-FBR No.</th><th ${tdL}>Invoice No.</th>
+          <th ${tdR}>PO Qty</th><th ${tdR}>Unit Carton Qty</th><th ${tdR}>Delivered Qty</th><th ${tdR}>Wastage</th><th ${tdR}>Ready Qty</th><th ${tdR}>Packets</th>
+          <th ${tdL}>Paper</th><th ${tdL}>Machine</th><th ${tdL}>Coatings</th>
+          <th ${tdR}>Rate/Unit</th><th ${tdR}>Rate w/o Tax</th><th ${tdR}>Tax %</th><th ${tdR}>Rate w/ Tax</th>
+          <th ${tdL}>Company</th><th ${tdL}>Destination</th><th ${tdL}>NTN</th>
+        </tr>
+        ${tableRows}
+        <tr style="background:#eee;font-weight:bold;">
+          <td colspan="16" ${tdL} style="text-align:right;">Total</td>
+          <td ${tdR}></td>
+          <td ${tdR}>${fmtRate(totals.amountExTax)}</td>
+          <td ${tdR}></td>
+          <td ${tdR}>${fmtRate(totals.amountIncTax)}</td>
+          <td colspan="3" ${tdL}></td>
+        </tr>
       </table>
     </div>`;
   const area = document.getElementById('print-area');
