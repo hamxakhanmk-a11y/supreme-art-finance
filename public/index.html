@@ -3950,6 +3950,28 @@ function readyCartonsTotal(j) {
   }
   return 0;
 }
+// "Cartons/Packets" — the ready_packets_qty field the Pasting operator (and
+// Ready to Deliver/QC) write in their own station entry, under "Packets /
+// Cartons". Distinct from Unit Cartons: this is a physical carton/packet
+// count, not the unit-carton production quantity. Same entries[]-or-
+// pipe-joined-quantity shape as readyCartonsTotal above, read-only here —
+// this app never writes to it, only displays what the tracker's stations
+// already recorded.
+function readyPacketsQtyTotal(j) {
+  if (!j) return 0;
+  const p = j.particulars && j.particulars.ready_packets_qty;
+  if (!p) return 0;
+  if (Array.isArray(p.entries) && p.entries.length) {
+    return p.entries.reduce((a, e) => {
+      const n = parseFloat(String((e && e.qty) || '').replace(/[^0-9.\-]/g, ''));
+      return a + (Number.isFinite(n) ? n : 0);
+    }, 0);
+  }
+  return String(p.quantity || '').split('|').reduce((a, s) => {
+    const n = parseFloat(String(s).replace(/[^0-9.\-]/g, ''));
+    return a + (Number.isFinite(n) ? n : 0);
+  }, 0);
+}
 // ── Linked Jobs (pairwise) ────────────────────────────────────────
 // Resolve a job by id from whichever cache is loaded — the admin `jobs`
 // array (admin dashboard + admin's "Client View" preview) or the real
@@ -12502,7 +12524,7 @@ function openSaleReport() {
           <option value="name"${saleReportState.sortBy==='name'?' selected':''}>Job Name</option>
           <option value="delivered"${saleReportState.sortBy==='delivered'?' selected':''}>Delivered Date</option>
           <option value="client"${saleReportState.sortBy==='client'?' selected':''}>Company</option>
-          <option value="deliveredQty"${saleReportState.sortBy==='deliveredQty'?' selected':''}>Cartons</option>
+          <option value="deliveredQty"${saleReportState.sortBy==='deliveredQty'?' selected':''}>Delivered UC Qty</option>
           <option value="amount"${saleReportState.sortBy==='amount'?' selected':''}>Rate w/ Sale Tax</option>
         </select>
       </div>
@@ -12637,6 +12659,7 @@ function buildSaleReportRows() {
     if (cf.coatings.length && !cf.coatings.includes(coatingsVal)) continue;
     if (cf.rate.length     && !cf.rate.includes(rateLabel))    continue;
     const cs = companySettingsFor(j.client);
+    const cartonsPackets = readyPacketsQtyTotal(j);
     deliveriesList.forEach((d, idx) => {
       const poNo    = (d && d.po_no    ? String(d.po_no).trim()    : '') || (j.ref || '');
       const batchNo = (d && d.batch_no ? String(d.batch_no).trim() : '') || (j.bno || '');
@@ -12659,7 +12682,7 @@ function buildSaleReportRows() {
         id: j.id, idDisplay: 'E-' + j.id, deliveryIndex: idx, name: j.name || '', type: productType,
         deliveredAt: (d && d.date) ? fmtDMY(d.date) : '', deliveredAtRaw: refMsOk, client: j.client || '',
         poNo, batchNo, fbrNo, msiNo, challan: invoice,
-        poQty: j.qty || '', cartonQty: j.cartonqty || '', cartons,
+        poQty: j.qty || '', cartonQty: j.cartonqty || '', cartons, cartonsPackets,
         wastage, readyQty, packets, paper,
         machine: machineVal, coatings: coatingsVal,
         isShadeCard: !!j.is_shade_card, isPartial: isPartialDelivery(j),
@@ -12777,16 +12800,28 @@ function renderSaleReport() {
   const fmt = n => !n && n !== 0 ? '' : (Number.isInteger(+n) ? (+n).toLocaleString() : (+n).toFixed(2));
   const td  = 'style="padding:8px 10px;"';
   const tdR = 'style="padding:8px 10px;text-align:right;"';
-  const totals = rows.reduce((a, r) => ({
-    poQty:        a.poQty        + (parseFloat(String(r.poQty).replace(/[^0-9.\-]/g, '')) || 0),
-    cartonQty:    a.cartonQty    + (parseFloat(String(r.cartonQty).replace(/[^0-9.\-]/g, '')) || 0),
-    cartons:      a.cartons      + (+r.cartons || 0),
-    wastage:      a.wastage      + (r.wastage == null ? 0 : (+r.wastage || 0)),
-    readyQty:     a.readyQty     + (+r.readyQty || 0),
-    packets:      a.packets      + (+r.packets || 0),
-    amountExTax:  a.amountExTax  + (r.amountExTax  || 0),
-    amountIncTax: a.amountIncTax + (r.amountIncTax || 0),
-  }), { poQty: 0, cartonQty: 0, cartons: 0, wastage: 0, readyQty: 0, packets: 0, amountExTax: 0, amountIncTax: 0 });
+  // poQty/cartonQty/wastage/readyQty/packets/cartonsPackets are all
+  // JOB-level figures that repeat identically on every shipment row for
+  // that job — only `cartons` and the two Amount columns are genuinely
+  // per-shipment. Count every job-level figure ONCE per job (its first
+  // row here), or a job split across N shipments would inflate them Nx.
+  const seenJobsForTotals = new Set();
+  const totals = rows.reduce((a, r) => {
+    const firstRowForJob = !seenJobsForTotals.has(r.id);
+    if (firstRowForJob) seenJobsForTotals.add(r.id);
+    const once = (v) => firstRowForJob ? (v || 0) : 0;
+    return {
+      poQty:          a.poQty          + once(parseFloat(String(r.poQty).replace(/[^0-9.\-]/g, ''))),
+      cartonQty:      a.cartonQty      + once(parseFloat(String(r.cartonQty).replace(/[^0-9.\-]/g, ''))),
+      cartons:        a.cartons        + (+r.cartons || 0),
+      cartonsPackets: a.cartonsPackets + once(+r.cartonsPackets),
+      wastage:        a.wastage        + once(r.wastage),
+      readyQty:       a.readyQty       + once(+r.readyQty),
+      packets:        a.packets        + once(+r.packets),
+      amountExTax:    a.amountExTax    + (r.amountExTax  || 0),
+      amountIncTax:   a.amountIncTax   + (r.amountIncTax || 0),
+    };
+  }, { poQty: 0, cartonQty: 0, cartons: 0, cartonsPackets: 0, wastage: 0, readyQty: 0, packets: 0, amountExTax: 0, amountIncTax: 0 });
   const canEditRate   = hasPerm('products_btn_rate', 'yes');
   const canEditFields = canRecordDelivery();
   // Inline-editable reference-field cell — same PATCH route the job
@@ -12815,6 +12850,7 @@ function renderSaleReport() {
       <td ${tdR}>${esc(r.poQty)}</td>
       <td ${tdR}>${esc(r.cartonQty)}</td>
       <td ${tdR}>${r.cartons.toLocaleString()}${(r.isShadeCard && r.cartons) ? ' copies' : ''}</td>
+      <td ${tdR}>${r.cartonsPackets > 0 ? r.cartonsPackets.toLocaleString() : '&mdash;'}</td>
       <td ${tdR}>${r.wastage === null ? '&mdash;' : fmt(r.wastage)}</td>
       <td style="padding:8px 10px;text-align:right;font-weight:600;color:${r.readyQty > 0 ? '#166534' : 'var(--text2)'};">${fmt(r.readyQty)}</td>
       <td ${tdR}>${fmt(r.packets)}</td>
@@ -12848,7 +12884,8 @@ function renderSaleReport() {
           <th ${th}>Invoice No.</th>
           <th ${thR}>PO Qty</th>
           <th ${thR}>Unit Carton Qty</th>
-          <th ${thR}>Cartons</th>
+          <th ${thR}>Delivered UC Qty</th>
+          <th ${thR}>Cartons/Packets</th>
           <th ${thR}>Wastage</th>
           <th ${thR}>Ready Qty</th>
           <th ${thR}>Packets</th>
@@ -12872,6 +12909,7 @@ function renderSaleReport() {
           <td style="padding:8px 10px;text-align:right;">${fmt(totals.poQty)}</td>
           <td style="padding:8px 10px;text-align:right;">${fmt(totals.cartonQty)}</td>
           <td style="padding:8px 10px;text-align:right;">${fmt(totals.cartons)}</td>
+          <td style="padding:8px 10px;text-align:right;">${fmt(totals.cartonsPackets)}</td>
           <td style="padding:8px 10px;text-align:right;">${fmt(totals.wastage)}</td>
           <td style="padding:8px 10px;text-align:right;">${fmt(totals.readyQty)}</td>
           <td style="padding:8px 10px;text-align:right;">${fmt(totals.packets)}</td>
@@ -12892,7 +12930,7 @@ async function exportSaleReport() {
   const rows = buildSaleReportRows();
   if (!rows.length) { notify('Nothing to export — empty filter result.'); return; }
   const header = ['Job ID', 'Job Name', 'Delivered', 'PO No.', 'Batch No.', 'E-FBR No.', 'MSI No.', 'Invoice No.',
-    'PO Qty', 'Unit Carton Qty', 'Cartons', 'Wastage', 'Ready Qty', 'Packets Consumed', 'Paper', 'Machine', 'Coatings',
+    'PO Qty', 'Unit Carton Qty', 'Delivered UC Qty', 'Cartons/Packets', 'Wastage', 'Ready Qty', 'Packets Consumed', 'Paper', 'Machine', 'Coatings',
     'Rate / Unit Carton', 'Rate w/o Sale Tax', 'Sale Tax %', 'Rate w/ Sale Tax', 'Company', 'Destination', 'NTN'];
   const aoa = [header];
   for (const r of rows) {
@@ -12901,7 +12939,7 @@ async function exportSaleReport() {
     const nameCell = r.isShadeCard ? `${r.name} (Shade Card)` : r.name;
     aoa.push([
       r.idDisplay, nameCell, r.deliveredAt, r.poNo, r.batchNo || '', r.fbrNo || '', r.msiNo || '', r.challan || '',
-      r.poQty, r.cartonQty, cartonsCell, r.wastage === null ? '' : r.wastage, r.readyQty,
+      r.poQty, r.cartonQty, cartonsCell, r.cartonsPackets > 0 ? r.cartonsPackets : '', r.wastage === null ? '' : r.wastage, r.readyQty,
       r.packets ? +r.packets.toFixed(2) : '', r.paper, r.machine, r.coatings,
       r.rate === null ? '' : r.rate,
       r.amountExTax === null ? '' : +r.amountExTax.toFixed(2),
@@ -12942,6 +12980,7 @@ function printSaleReport() {
     <td ${tdR}>${esc(r.poQty)}</td>
     <td ${tdR}>${esc(r.cartonQty)}</td>
     <td style="border:1px solid #000;padding:4px;text-align:right;${cartonsStyle}">${r.cartons.toLocaleString()}${(r.isShadeCard && r.cartons) ? ' copies' : ''}</td>
+    <td ${tdR}>${r.cartonsPackets > 0 ? r.cartonsPackets.toLocaleString() : '—'}</td>
     <td ${tdR}>${r.wastage === null ? '—' : fmt(r.wastage)}</td>
     <td ${tdR}>${fmt(r.readyQty)}</td>
     <td ${tdR}>${fmt(r.packets)}</td>
@@ -12979,14 +13018,14 @@ function printSaleReport() {
       <table style="width:100%;font-size:7pt;border:1px solid #000;border-collapse:collapse;">
         <tr style="background:#eee;">
           <th ${tdL}>Job ID</th><th ${tdL}>Job Name</th><th ${tdL}>Delivered</th><th ${tdL}>PO No.</th><th ${tdL}>Batch No.</th><th ${tdL}>E-FBR No.</th><th ${tdL}>MSI No.</th><th ${tdL}>Invoice No.</th>
-          <th ${tdR}>PO Qty</th><th ${tdR}>Unit Carton Qty</th><th ${tdR}>Cartons</th><th ${tdR}>Wastage</th><th ${tdR}>Ready Qty</th><th ${tdR}>Packets</th>
+          <th ${tdR}>PO Qty</th><th ${tdR}>Unit Carton Qty</th><th ${tdR}>Delivered UC Qty</th><th ${tdR}>Cartons/Packets</th><th ${tdR}>Wastage</th><th ${tdR}>Ready Qty</th><th ${tdR}>Packets</th>
           <th ${tdL}>Paper</th><th ${tdL}>Machine</th><th ${tdL}>Coatings</th>
           <th ${tdR}>Rate/Unit Carton</th><th ${tdR}>Rate w/o Tax</th><th ${tdR}>Tax %</th><th ${tdR}>Rate w/ Tax</th>
           <th ${tdL}>Company</th><th ${tdL}>Destination</th><th ${tdL}>NTN</th>
         </tr>
         ${tableRows}
         ${hasPerm('rpt_sale_report_totals', 'view') ? `<tr style="background:#eee;font-weight:bold;">
-          <td colspan="17" ${tdL} style="text-align:right;">Total</td>
+          <td colspan="18" ${tdL} style="text-align:right;">Total</td>
           <td ${tdR}></td>
           <td ${tdR}>${fmtRate(totals.amountExTax)}</td>
           <td ${tdR}></td>
@@ -20448,6 +20487,17 @@ function deliveriesSection(j, opts) {
   const editCell = (i, field, value, opts2) => canEditEntries
     ? `<input type="text" value="${esc(value)}" onchange="saveDeliveryEntryField(${j.id}, ${i}, '${field}', this.value)" title="${esc((opts2&&opts2.title)||'')}" style="width:100%;padding:4px 6px;border:1px solid var(--border);border-radius:4px;box-sizing:border-box;font-size:12px;">`
     : `<span title="${esc(value)}">${esc(value)}</span>`;
+  // Cartons/Packets is a job-level figure (what the Pasting/Ready-to-
+  // Deliver station wrote), not per-delivery — same value shows on every
+  // card below, same way Rate/Company/etc. repeat per shipment row in the
+  // Sale Report.
+  const cartonsPackets = readyPacketsQtyTotal(j);
+  const fieldBox = (label, valueHtml) => `<div style="min-width:0;"><div style="font-size:9px;color:var(--text2);text-transform:uppercase;letter-spacing:0.4px;margin-bottom:2px;">${label}</div><div style="font-size:12.5px;">${valueHtml}</div></div>`;
+  // Each recorded delivery gets its own yellow-tinted card (not a table
+  // row) — a table row packed 7+ tiny inputs into one squeezed line;
+  // cards give every field room to wrap onto its own line on a narrow
+  // job-card panel, and the yellow tint marks "this delivery is recorded"
+  // at a glance.
   const rows = list.length
     ? list.map((d, i) => {
         const ctns = d.cartons  || '';
@@ -20467,19 +20517,23 @@ function deliveriesSection(j, opts) {
         const delBtn = isAdminUser
           ? `<button type="button" class="btn btn-sm" style="background:#fff;color:#991B1B;border-color:#fecaca;padding:2px 8px;font-size:11px;" onclick="removeDelivery(${j.id}, ${i})" title="Remove this delivery entry">&times;</button>`
           : '';
-        return `<tr>
-          <td style="padding:6px 8px;white-space:nowrap;">${esc(dt)}</td>
-          <td style="text-align:right;font-weight:600;padding:6px 8px;white-space:nowrap;">${esc(ctns)}</td>
-          ${isShadeCard ? '' : `<td style="padding:6px 8px;">${editCell(i, 'po_no', po)}</td>
-          <td style="padding:6px 8px;">${editCell(i, 'batch_no', bat)}</td>`}
-          <td style="padding:6px 8px;">${editCell(i, 'fbr_no', fbr)}</td>
-          <td style="padding:6px 8px;">${editCell(i, 'msi_no', msi)}</td>
-          <td style="padding:6px 8px;">${isShadeCard ? `<span title="${esc(nt)}">${esc(nt)}</span>` : editCell(i, 'notes', nt)}${linkedTag}</td>
-          <td style="font-size:11px;color:var(--text2);padding:6px 8px;word-break:break-all;" title="${esc(by)}">${esc(by)}</td>
-          <td style="text-align:center;padding:6px 4px;">${delBtn}</td>
-        </tr>`;
+        return `<div style="background:#fefce8;border:1px solid #fde68a;border-radius:8px;padding:10px 12px;margin-bottom:8px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+            <span style="font-size:11px;color:var(--text2);">${esc(dt)} &middot; by <span style="color:var(--text);">${esc(by)}</span>${linkedTag}</span>
+            ${delBtn}
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(95px,1fr));gap:10px;">
+            ${fieldBox(countLabel, `<b>${esc(ctns)}</b>`)}
+            ${fieldBox('Cartons/Packets', cartonsPackets > 0 ? `<b>${cartonsPackets.toLocaleString()}</b>` : '&mdash;')}
+            ${isShadeCard ? '' : fieldBox('PO No.', editCell(i, 'po_no', po))}
+            ${isShadeCard ? '' : fieldBox('Batch No.', editCell(i, 'batch_no', bat))}
+            ${fieldBox('E-FBR No.', editCell(i, 'fbr_no', fbr))}
+            ${fieldBox('MSI No.', editCell(i, 'msi_no', msi))}
+            ${fieldBox(isShadeCard ? 'Delivery Challan (auto)' : 'Invoice No.', isShadeCard ? `<span title="${esc(nt)}">${esc(nt)}</span>` : editCell(i, 'notes', nt))}
+          </div>
+        </div>`;
       }).join('')
-    : `<tr><td colspan="${isShadeCard ? 7 : 9}" style="text-align:center;color:var(--text3);font-style:italic;padding:12px;">No deliveries recorded yet.</td></tr>`;
+    : `<div style="text-align:center;color:var(--text3);font-style:italic;padding:16px;">No deliveries recorded yet.</div>`;
 
   // Ready-but-not-shipped chip — same figure the tile's own READY badge
   // shows (Ready to Deliver Qty minus what's already shipped). Sits right
@@ -20565,33 +20619,7 @@ function deliveriesSection(j, opts) {
     </div>
     <div style="font-size:12px;color:var(--text);margin-bottom:8px;">${summaryLine}</div>
     <div style="font-size:12px;color:var(--text);margin-bottom:8px;">${pricingText}</div>
-    <table style="width:100%;border-collapse:collapse;font-size:12px;table-layout:fixed;">
-      <colgroup>
-        <col style="width:10%;">
-        <col style="width:8%;">
-        ${isShadeCard ? '' : `<col style="width:11%;">
-        <col style="width:9%;">`}
-        <col style="width:11%;">
-        <col style="width:11%;">
-        <col style="width:11%;">
-        <col style="width:auto;">
-        <col style="width:36px;">
-      </colgroup>
-      <thead>
-        <tr style="background:#f3f4f6;">
-          <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--border);">Date</th>
-          <th style="text-align:right;padding:6px 8px;border-bottom:1px solid var(--border);">${countLabel}</th>
-          ${isShadeCard ? '' : `<th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--border);">PO No.</th>
-          <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--border);">Batch No.</th>`}
-          <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--border);">E-FBR No.</th>
-          <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--border);">MSI No.</th>
-          <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--border);">Invoice No.</th>
-          <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--border);">By</th>
-          <th style="padding:6px 8px;border-bottom:1px solid var(--border);"></th>
-        </tr>
-      </thead>
-      <tbody>${rows}</tbody>
-    </table>
+    <div>${rows}</div>
     ${addForm}
   </div>`;
 }
