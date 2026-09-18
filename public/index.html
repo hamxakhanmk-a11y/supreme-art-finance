@@ -12489,6 +12489,7 @@ function openSaleReport() {
       <h2 style="margin:0;font-size:20px;">Sale Report</h2>
       <span style="color:var(--text2);font-size:12px;">One row per shipment — every job with a delivery recorded, with Rate, Sale Tax %, and Company/Destination/NTN.</span>
       <div style="margin-left:auto;display:flex;gap:8px;">
+        <button class="btn btn-sm delivery-write-only-report" onclick="openCompanySettings()" title="Set NTN and Destination per company — feeds this report's Company/Destination/NTN columns">&#127970; Company Settings</button>
         <button class="btn btn-sm" onclick="exportSaleReport()">&#128202; Export to Excel</button>
         <button class="btn btn-sm" onclick="printSaleReport()">&#128424; Print Report</button>
       </div>
@@ -12879,7 +12880,7 @@ function renderSaleReport() {
   // here and a change there are the exact same write. stopPropagation
   // keeps the click off the row's own "open job card" handler.
   const editCell = (r, field, value, maxW) => canEditFields
-    ? `<input type="${field === 'cartons' ? 'number' : 'text'}" ${field === 'cartons' ? 'min="0.01" step="any"' : ''} value="${esc(value)}" onclick="event.stopPropagation()" onchange="event.stopPropagation(); saveDeliveryEntryField(${r.id}, ${r.deliveryIndex}, '${field}', this.value)" style="width:100%;min-width:${maxW}px;padding:4px 6px;border:1px solid var(--border);border-radius:4px;box-sizing:border-box;font-size:12px;">`
+    ? `<input type="text" value="${esc(value)}" onclick="event.stopPropagation()" onchange="event.stopPropagation(); saveDeliveryEntryField(${r.id}, ${r.deliveryIndex}, '${field}', this.value)" style="width:100%;min-width:${maxW}px;padding:4px 6px;border:1px solid var(--border);border-radius:4px;box-sizing:border-box;font-size:12px;">`
     : `<span title="${esc(value)}">${esc(value)}</span>`;
   const tbody = rows.map(r => {
     const rateCell = canEditRate
@@ -12899,7 +12900,7 @@ function renderSaleReport() {
       <td ${td}>${editCell(r, 'notes', r.challan, 90)}</td>
       <td ${tdR}>${esc(r.poQty)}</td>
       <td ${tdR}>${esc(r.cartonQty)}</td>
-      <td ${tdR}>${editCell(r, 'cartons', r.cartons, 70)}</td>
+      <td ${tdR}>${r.cartons.toLocaleString()}</td>
       <td ${tdR}>${r.cartonsPackets > 0 ? r.cartonsPackets.toLocaleString() : '&mdash;'}</td>
       <td ${tdR}>${r.wastage === null ? '&mdash;' : fmt(r.wastage)}</td>
       <td style="padding:8px 10px;text-align:right;font-weight:600;color:${r.readyQty > 0 ? '#166534' : 'var(--text2)'};">${fmt(r.readyQty)}</td>
@@ -21112,6 +21113,7 @@ async function saveCompanySetting(id) {
     else    await api('POST', '/api/company-settings', { company, ntn, destination });
     await loadCompanySettings();
     render();
+    if (document.getElementById('sr-content')) renderSaleReport();
     notify('Company Settings saved');
     openCompanySettings();
   } catch (e) { notify('Error: ' + e.message); }
@@ -21130,6 +21132,7 @@ async function deleteCompanySetting(id) {
     await api('DELETE', `/api/company-settings/${id}`);
     await loadCompanySettings();
     render();
+    if (document.getElementById('sr-content')) renderSaleReport();
     notify('Company Settings deleted');
     openCompanySettings();
   } catch (e) { notify('Error: ' + e.message); }
