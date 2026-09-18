@@ -12278,7 +12278,7 @@ function printJobsReport() {
 // bulk-select/created-mode toggle. Gated by delivery_write, same as
 // Company Settings and the Product Rate tab — this is the one report that
 // shows pricing.
-const saleReportState = { client: '', dfrom: '', dto: '', q: '' };
+const saleReportState = { client: '', dfrom: '', dto: '', q: '', type: '', sortBy: 'id', sortDir: 'asc' };
 
 function openSaleReportPage() {
   if (!canRecordDelivery()) { notify('Sale Report is not available for your role.'); return; }
@@ -12320,6 +12320,33 @@ function openSaleReport() {
           ${clients.map(c => `<option value="${esc(c)}"${saleReportState.client===c?' selected':''}>${esc(c)}</option>`).join('')}
         </select>
       </div>
+      <div>
+        <div class="dash-flbl">Type</div>
+        <select class="filter" id="sr-type" onchange="setSrType(this.value)">
+          <option value="">All types</option>
+          <option value="UC"${saleReportState.type==='UC'?' selected':''}>UC &mdash; Unit Carton</option>
+          <option value="GOP"${saleReportState.type==='GOP'?' selected':''}>GOP &mdash; Government of Punjab</option>
+          <option value="PS"${saleReportState.type==='PS'?' selected':''}>PS &mdash; Physician Sample</option>
+          <option value="Labels"${saleReportState.type==='Labels'?' selected':''}>Labels</option>
+          <option value="Tab"${saleReportState.type==='Tab'?' selected':''}>Tab &mdash; Tablets</option>
+          <option value="Cap"${saleReportState.type==='Cap'?' selected':''}>Cap &mdash; Capsules</option>
+        </select>
+      </div>
+      <div>
+        <div class="dash-flbl">Sort by</div>
+        <select class="filter" id="sr-sort-by" onchange="setSrSortBy(this.value)">
+          <option value="id"${saleReportState.sortBy==='id'?' selected':''}>Job ID</option>
+          <option value="name"${saleReportState.sortBy==='name'?' selected':''}>Job Name</option>
+          <option value="delivered"${saleReportState.sortBy==='delivered'?' selected':''}>Delivered Date</option>
+          <option value="client"${saleReportState.sortBy==='client'?' selected':''}>Company</option>
+          <option value="deliveredQty"${saleReportState.sortBy==='deliveredQty'?' selected':''}>Delivered Qty</option>
+          <option value="amount"${saleReportState.sortBy==='amount'?' selected':''}>Rate w/ Sale Tax</option>
+        </select>
+      </div>
+      <div>
+        <div class="dash-flbl">&nbsp;</div>
+        <button class="btn btn-sm" id="sr-sort-dir" onclick="toggleSrSortDir()" title="Toggle ascending/descending">${saleReportState.sortDir === 'asc' ? '&#8593; Asc' : '&#8595; Desc'}</button>
+      </div>
     </div>
     <div id="sr-content" style="font-size:12px;"></div>
   `;
@@ -12329,6 +12356,14 @@ function setSrDFrom(v)  { saleReportState.dfrom = v;  renderSaleReport(); }
 function setSrDTo(v)    { saleReportState.dto = v;    renderSaleReport(); }
 function setSrQ(v)      { saleReportState.q = v;      renderSaleReport(); }
 function setSrClient(v) { saleReportState.client = v; renderSaleReport(); }
+function setSrType(v)   { saleReportState.type = v;   renderSaleReport(); }
+function setSrSortBy(v) { saleReportState.sortBy = v; renderSaleReport(); }
+function toggleSrSortDir() {
+  saleReportState.sortDir = saleReportState.sortDir === 'asc' ? 'desc' : 'asc';
+  const btn = document.getElementById('sr-sort-dir');
+  if (btn) btn.innerHTML = saleReportState.sortDir === 'asc' ? '&#8593; Asc' : '&#8595; Desc';
+  renderSaleReport();
+}
 
 // Build the rows — same shape/filters as buildJobsReportRows() (delivered
 // stage OR any recorded shipment, date range against the Delivered stage
@@ -12339,7 +12374,7 @@ function setSrClient(v) { saleReportState.client = v; renderSaleReport(); }
 // the net/gross line totals, which is what makes them summable in the
 // totals row below.
 function buildSaleReportRows() {
-  const { client, dfrom, dto, q } = saleReportState;
+  const { client, dfrom, dto, q, type: typeFilter, sortBy, sortDir } = saleReportState;
   const lastStageIdx = STAGES.length - 1;
   const qNorm  = String(q || '').trim().toLowerCase();
   const qId    = qNorm.replace(/^e-?/, '');
@@ -12350,6 +12385,10 @@ function buildSaleReportRows() {
     const hasAnyShipment = deliveriesList.length > 0;
     if ((j.stage_index || 0) !== lastStageIdx && !hasAnyShipment) continue;
     if (client && j.client !== client) continue;
+    // Same UC/GOP/PS/Labels/Tab/Cap glossary the Product Rate tab's Type
+    // filter uses (detectProductType), detected from the job name.
+    const productType = detectProductType(j.name);
+    if (typeFilter && productType !== typeFilter) continue;
     if (qNorm) {
       const idHit   = qIsNum && String(j.id) === qId;
       const nameHit = String(j.name || '').toLowerCase().includes(qNorm);
@@ -12359,17 +12398,19 @@ function buildSaleReportRows() {
     const stampFromStage = stageRec && stageRec.time ? String(fmtStageTime(stageRec.time)).split(' ')[0] : '';
     const ledgerDates = deliveriesList.map(d => d && d.date ? fmtDMY(d.date) : '').filter(Boolean);
     const deliveredAt = ledgerDates.length ? ledgerDates.join(' | ') : stampFromStage;
+    // Computed unconditionally (not just when a date filter is active) —
+    // "Delivered Date" is also one of the Sort by options below.
+    let refMs = NaN;
+    if (stageRec && stageRec.at) refMs = new Date(stageRec.at).getTime();
+    if (!isFinite(refMs) && stageRec && stageRec.time) {
+      const m = String(fmtStageTime(stageRec.time)).match(/^(\d{2})\/(\d{2})\/(\d{4})(?:\s+(\d{2}):(\d{2}))?/);
+      if (m) refMs = new Date(+m[3], +m[2]-1, +m[1], +(m[4]||0), +(m[5]||0)).getTime();
+    }
+    if (!isFinite(refMs) && deliveriesList.length) {
+      const stamps = deliveriesList.map(d => (d && d.at) ? new Date(d.at).getTime() : (d && d.date ? new Date(d.date + 'T12:00:00').getTime() : NaN)).filter(n => isFinite(n));
+      if (stamps.length) refMs = Math.max(...stamps);
+    }
     if (dfrom || dto) {
-      let refMs = NaN;
-      if (stageRec && stageRec.at) refMs = new Date(stageRec.at).getTime();
-      if (!isFinite(refMs) && stageRec && stageRec.time) {
-        const m = String(fmtStageTime(stageRec.time)).match(/^(\d{2})\/(\d{2})\/(\d{4})(?:\s+(\d{2}):(\d{2}))?/);
-        if (m) refMs = new Date(+m[3], +m[2]-1, +m[1], +(m[4]||0), +(m[5]||0)).getTime();
-      }
-      if (!isFinite(refMs) && deliveriesList.length) {
-        const stamps = deliveriesList.map(d => (d && d.at) ? new Date(d.at).getTime() : (d && d.date ? new Date(d.date + 'T12:00:00').getTime() : NaN)).filter(n => isFinite(n));
-        if (stamps.length) refMs = Math.max(...stamps);
-      }
       if (!isFinite(refMs)) continue;
       if (dfrom && refMs < new Date(dfrom + 'T00:00:00').getTime()) continue;
       if (dto   && refMs > new Date(dto   + 'T23:59:59').getTime()) continue;
@@ -12409,8 +12450,8 @@ function buildSaleReportRows() {
     const amountIncTax = amountExTax !== null ? amountExTax * (1 + taxPct / 100) : null;
     const cs = companySettingsFor(j.client);
     out.push({
-      id: j.id, idDisplay: 'E-' + j.id, name: j.name || '',
-      deliveredAt, client: j.client || '',
+      id: j.id, idDisplay: 'E-' + j.id, name: j.name || '', type: productType,
+      deliveredAt, deliveredAtRaw: isFinite(refMs) ? refMs : null, client: j.client || '',
       poNo, batchNo, fbrNo, challan,
       poQty: j.qty || '', cartonQty: j.cartonqty || '', deliveredQty: j.delqty || '',
       wastage, readyQty, packets, paper,
@@ -12420,7 +12461,30 @@ function buildSaleReportRows() {
       destination: (cs && cs.destination) || '', ntn: (cs && cs.ntn) || '',
     });
   }
-  out.sort((a, b) => a.id - b.id);
+  // Sort by whichever field the "Sort by" dropdown picked, ascending or
+  // descending per the toggle. Rows with no comparable value (e.g. no
+  // parseable Delivered date) sort to the end either direction.
+  const dir = sortDir === 'desc' ? -1 : 1;
+  const keyFor = (r) => {
+    switch (sortBy) {
+      case 'name':         return String(r.name || '').toLowerCase();
+      case 'client':       return String(r.client || '').toLowerCase();
+      case 'delivered':    return r.deliveredAtRaw;
+      case 'deliveredQty': return +r.deliveredQty || 0;
+      case 'amount':       return r.amountIncTax;
+      case 'id': default:  return r.id;
+    }
+  };
+  out.sort((a, b) => {
+    const ka = keyFor(a), kb = keyFor(b);
+    const aNil = ka === null || ka === undefined || ka === '';
+    const bNil = kb === null || kb === undefined || kb === '';
+    if (aNil && bNil) return 0;
+    if (aNil) return 1;
+    if (bNil) return -1;
+    if (typeof ka === 'string') return dir * ka.localeCompare(kb);
+    return dir * (ka - kb);
+  });
   return out;
 }
 function renderSaleReport() {
