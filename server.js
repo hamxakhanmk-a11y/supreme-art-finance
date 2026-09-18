@@ -277,7 +277,15 @@ function getDb() {
 // Bumped again for finance.company_settings (NTN, Destination per company).
 // Bumped again for finance.product_aliases (fold a differently-named job
 // into an existing product, past and future).
-const SCHEMA_VERSION = 'v2026-09-18-finance-product-aliases';
+// Bumped again to seed rpt_sale_report / rpt_sale_report_totals /
+// products_tab_access / products_btn_rate / products_btn_revenue into
+// finance.role_permissions — no schema change, but without this bump the
+// fast-path skip means the defaults-fill loop near the bottom of initDb()
+// never runs, and every one of these NEW keys sits at 'no' for every role
+// (ROLE_PERMS[key] is always a truthy {} once the cache has loaded once,
+// even with zero rows — see refreshRolePermissions), which would lock
+// Sale Report and the Product Rate tab down to Super Admin only.
+const SCHEMA_VERSION = 'v2026-09-18-finance-access-register-v2';
 
 // This app shares its Neon database with the Job Tracker app (it started as
 // a copy of it). Both run initDb() at boot, so they must NOT share the one
@@ -399,22 +407,26 @@ const ROLE_PERMISSION_DEFAULTS = {
 
   // Access Register — Reports tab. All 2-state (view/hidden) — reports are
   // read-only, there's no "edit" concept for any of them. Same "not wired
-  // into any gate yet" note applies — inventory_reports/production_reports/
-  // wastage_adjustment/trash_view keep enforcing exactly as before.
+  // into any gate yet" note applies to rpt_manual_job_card_consumption/
+  // rpt_jobs_report, which keep enforcing exactly as before via the older
+  // wastage_adjustment/production_reports groups in the meantime.
+  //
+  // 2026-09-18: dropped the tracker-only rows this app's Reports landing
+  // never had (Stock In/Out/Summary, Current Balance, Offcut Consumption,
+  // Production Report, Daily Production Report, Jobs/Imports Archive) — the
+  // register was listing options for report cards that don't exist in this
+  // app, per Hamza. Added rpt_sale_report / rpt_sale_report_totals — both
+  // ARE live gates (openSaleReportPage()/renderSaleReport() check them
+  // directly), unlike the two rows above.
   reports_tab_access:              { label: 'Reports tab — view the Reports landing page', levels: { admin: 'view', ceo: 'view', production_manager: 'view', store_manager: 'view', finance: 'view' } },
-  rpt_stock_in:                    { label: 'Stock In report', levels: { admin: 'view', ceo: 'view', production_manager: 'view', store_manager: 'view', finance: 'view' } },
-  rpt_stock_out:                   { label: 'Stock Out report', levels: { admin: 'view', ceo: 'view', production_manager: 'view', store_manager: 'view', finance: 'view' } },
-  rpt_stock_summary:                { label: 'Stock Summary report', levels: { admin: 'view', ceo: 'view', production_manager: 'view', store_manager: 'view', finance: 'view' } },
-  rpt_current_balance:             { label: 'Current Balance Summary report', levels: { admin: 'view', ceo: 'view', production_manager: 'view', store_manager: 'view', finance: 'view' } },
-  rpt_offcut_consumption:          { label: 'Offcut Consumption report', levels: { admin: 'view', ceo: 'view', production_manager: 'view', store_manager: 'view', finance: 'view' } },
   // Empty by default, same as the old wastage_adjustment group it mirrors
   // (only Super Admin gets this today).
   rpt_manual_job_card_consumption: { label: 'Manual Job Card Consumption report — also covers its own Archive view', levels: {} },
   rpt_jobs_report:                 { label: 'Jobs Report', levels: { admin: 'view', ceo: 'view', production_manager: 'view', finance: 'view' } },
-  rpt_production_report:           { label: 'Production Report', levels: { admin: 'view', ceo: 'view', production_manager: 'view', finance: 'view' } },
-  rpt_daily_production_report:     { label: 'Daily Production Report', levels: { admin: 'view', ceo: 'view', production_manager: 'view', finance: 'view' } },
-  rpt_jobs_archive:                { label: 'Jobs Archive', levels: { admin: 'view', ceo: 'view' } },
-  rpt_imports_archive:             { label: 'Imports Archive', levels: { admin: 'view', ceo: 'view' } },
+  rpt_sale_report:                 { label: 'Sale Report — full invoicing detail (Rate, Sale Tax, Company/Destination/NTN)', levels: { admin: 'view', finance: 'view' } },
+  // Finance role deliberately excluded by default — Hamza wants the summed
+  // amount reserved for admin/ceo, not the Finance role.
+  rpt_sale_report_totals:          { label: 'Sale Report — totals row at the bottom (summed Rate w/o & w/ Sale Tax)', levels: { admin: 'view', ceo: 'view' } },
 
   // Access Register — Users tab. Same "not wired into any gate yet" note
   // applies — user_view/user_admin/operator_admin keep enforcing exactly
@@ -434,6 +446,16 @@ const ROLE_PERMISSION_DEFAULTS = {
   user_btn_operators:              { label: 'Operators — also covers every button in Floor Operators (add, edit, remove)', levels: { admin: 'yes', production_manager: 'yes' } },
   user_activitylog_tab_access:     { label: 'Activity Log — view the site-wide activity feed', levels: { admin: 'view', ceo: 'view' } },
   user_accessregister_tab_access:  { label: 'Access Register — Super Admin only; always locked hidden for every other role', levels: {} },
+
+  // Access Register — Products tab (new 2026-09-18, Supreme Art Finance
+  // only). All three are LIVE gates — setMode()/productTileHtml()/
+  // renderProductsTab() read them directly. Defaults mirror what
+  // canRecordDelivery() already granted before this tab had its own
+  // register rows, so nothing changes out of the box; Hamza can now
+  // adjust per role without a redeploy.
+  products_tab_access:  { label: 'Product Rate tab — view jobs grouped by product', levels: { admin: 'view', finance: 'view' } },
+  products_btn_rate:    { label: 'Rate — edit a Product Rate tile\'s default Rate, and use its "+" (fold another product in)', levels: { admin: 'yes', finance: 'yes' } },
+  products_btn_revenue: { label: 'Revenue / Avg Rate — see those two stats on a Product Rate tile', levels: { admin: 'view', finance: 'view' } },
 };
 // In-memory cache, refreshed on write. Read on every request, so it must
 // never be empty/stale relative to the DB for longer than one write's

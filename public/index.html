@@ -207,6 +207,18 @@
   body.role-not-superadmin .superadmin-only-report { display: none !important; }
   /* Product Rate report — whoever can record deliveries manages pricing too. */
   body.role-no-delivery-write .delivery-write-only-report { display: none !important; }
+  /* Sale Report and Product Rate tab — gated by their own Access Register
+     rows (rpt_sale_report / products_tab_access) instead of the coarse
+     delivery_write check, so Hamza can grant/revoke them per role. */
+  body.role-no-sale-report .sale-report-only { display: none !important; }
+  body.role-no-products-tab .products-tab-only { display: none !important; }
+  /* Product Rate tab's own Rate/Revenue cells — products_btn_rate /
+     products_btn_revenue, independent of tab access itself. */
+  body.role-no-products-rate .products-rate-only { display: none !important; }
+  body.role-no-products-revenue .products-revenue-only { display: none !important; }
+  /* Sale Report's totals row — rpt_sale_report_totals, independent of
+     seeing the report itself. */
+  body.role-no-sale-totals .sale-totals-only { display: none !important; }
   body.role-lock-inventory #inventory-mode .ceo-hide,
   body.role-lock-inventory #imports-mode .ceo-hide { display: none !important; }
   /* Production Manager: in the Users tab they only see the Floor Operators
@@ -2837,7 +2849,7 @@ td.jc-details-cell > input[type="text"] { padding-right: 20px; }
   </div>
   <div class="mode-switch" id="mode-switch">
     <button class="mode-btn active" data-mode="jobs" id="mode-jobs-btn" onclick="setMode('jobs')">Jobs</button>
-    <button class="mode-btn delivery-write-only-report" data-mode="products" id="mode-products-btn" onclick="setMode('products')">Product Rate</button>
+    <button class="mode-btn products-tab-only" data-mode="products" id="mode-products-btn" onclick="setMode('products')">Product Rate</button>
     <button class="mode-btn" data-mode="reports" id="mode-reports-btn" onclick="setMode('reports')">Reports</button>
     <button class="mode-btn" data-mode="users" onclick="setMode('users')" id="mode-users-btn">Users</button>
   </div>
@@ -3006,7 +3018,7 @@ td.jc-details-cell > input[type="text"] { padding-right: 20px; }
         <div class="report-card-title">Jobs Report</div>
         <div class="report-card-desc">Tabular log of every delivered job — date, company, PO number, quantities, packets consumed, paper, machine, coatings. With print + Excel export.</div>
       </button>
-      <button class="report-card delivery-write-only-report" onclick="openSaleReportPage()">
+      <button class="report-card sale-report-only" onclick="openSaleReportPage()">
         <div class="report-card-icon">&#128176;</div>
         <div class="report-card-title">Sale Report</div>
         <div class="report-card-desc">Every delivered job with full invoicing detail — PO/Batch/E-FBR/Invoice No., quantities, paper/machine/coatings, Rate, Sale Tax %, and Company/Destination/NTN. With totals row, print + Excel export.</div>
@@ -4708,6 +4720,14 @@ function renderUserChip() {
   document.body.classList.toggle('role-not-superadmin', !canWastageAdjust());
   // Product Rate report — same gate as Pricing on the job card.
   document.body.classList.toggle('role-no-delivery-write', !canRecordDelivery());
+  // Sale Report, Product Rate tab, and their own Rate/Revenue/totals
+  // rows — each its own Access Register row now, editable per role
+  // without a redeploy (see ACC_PRODUCTS_TAB_ROWS / ACC_REPORTS_TAB_ROWS).
+  document.body.classList.toggle('role-no-sale-report', !hasPerm('rpt_sale_report', 'view'));
+  document.body.classList.toggle('role-no-sale-totals', !hasPerm('rpt_sale_report_totals', 'view'));
+  document.body.classList.toggle('role-no-products-tab', !hasPerm('products_tab_access', 'view'));
+  document.body.classList.toggle('role-no-products-rate', !hasPerm('products_btn_rate', 'view'));
+  document.body.classList.toggle('role-no-products-revenue', !hasPerm('products_btn_revenue', 'view'));
   renderAppDate();
 }
 
@@ -5002,6 +5022,9 @@ function setMode(m) {
   // bounced to Jobs since they don't have the role gate for it. Finance
   // may enter to see the role-block-msg placeholder.
   if (m === 'client-view' && !isAdmin() && !hasRole('ceo') && !isProductionManager() && !isFinance()) m = 'jobs';
+  // Product Rate tab — gated by its own Access Register row
+  // (products_tab_access) instead of a hardcoded role list.
+  if (m === 'products' && !hasPerm('products_tab_access', 'view')) m = 'jobs';
   // Station tab: PIN-gated shop-floor terminal. Admin / PM / operator
   // process; CEO enters read-only (all write buttons are .ceo-hide, plus
   // a server-side reject on station-update for the ceo role). Finance
@@ -12404,7 +12427,7 @@ function printJobsReport() {
 const saleReportState = loadPersistedFilters('sale-report', { client: '', dateRange: '', dfrom: '', dto: '', q: '', type: '', sortBy: 'id', sortDir: 'asc' });
 
 function openSaleReportPage() {
-  if (!canRecordDelivery()) { notify('Sale Report is not available for your role.'); return; }
+  if (!hasPerm('rpt_sale_report', 'view')) { notify('Sale Report is not available for your role.'); return; }
   openReportsGroup('sale-report-group');
   openSaleReport();
 }
@@ -12689,7 +12712,7 @@ function renderSaleReport() {
         </tr>
       </thead>
       <tbody>${tbody}</tbody>
-      <tfoot>
+      ${hasPerm('rpt_sale_report_totals', 'view') ? `<tfoot>
         <tr style="background:var(--bg2);font-weight:700;border-top:2px solid var(--border);">
           <td colspan="2" style="padding:8px 10px;">${rows.length} job${rows.length===1?'':'s'}</td>
           <td colspan="5" style="padding:8px 10px;text-align:right;color:var(--text2);">Total</td>
@@ -12706,7 +12729,7 @@ function renderSaleReport() {
           <td style="padding:8px 10px;text-align:right;">${fmtRate(totals.amountIncTax)}</td>
           <td colspan="3"></td>
         </tr>
-      </tfoot>
+      </tfoot>` : ''}
     </table>
     </div>`;
 }
@@ -12808,14 +12831,14 @@ function printSaleReport() {
           <th ${tdL}>Company</th><th ${tdL}>Destination</th><th ${tdL}>NTN</th>
         </tr>
         ${tableRows}
-        <tr style="background:#eee;font-weight:bold;">
+        ${hasPerm('rpt_sale_report_totals', 'view') ? `<tr style="background:#eee;font-weight:bold;">
           <td colspan="16" ${tdL} style="text-align:right;">Total</td>
           <td ${tdR}></td>
           <td ${tdR}>${fmtRate(totals.amountExTax)}</td>
           <td ${tdR}></td>
           <td ${tdR}>${fmtRate(totals.amountIncTax)}</td>
           <td colspan="3" ${tdL}></td>
-        </tr>
+        </tr>` : ''}
       </table>
     </div>`;
   const area = document.getElementById('print-area');
@@ -20554,22 +20577,29 @@ function productTileHtml(g, i) {
   const savedRate = rateRow ? Number(rateRow.rate) : null;
   const avgRate = g.cartons > 0 && g.revenue > 0 ? g.revenue / g.cartons : savedRate;
   const companies = [...g.companies].sort().join(', ');
-  const canEditRate = canRecordDelivery();
+  // Rate and Revenue/Avg Rate each have their own Access Register row
+  // (products_btn_rate / products_btn_revenue) — independent of Product
+  // Rate tab access itself, so Hamza can show the tile without its
+  // pricing to a role that shouldn't see it.
+  const canEditRate = hasPerm('products_btn_rate', 'yes');
+  const canSeeRate = hasPerm('products_btn_rate', 'view');
+  const canSeeRevenue = hasPerm('products_btn_revenue', 'view');
+  const statCols = canSeeRevenue ? 4 : 2;
   return `<div style="border:1px solid var(--border);border-radius:10px;padding:14px;background:#fff;cursor:pointer;" onclick="openProductHistoryModal(${i})" title="Click to view shipment history">
     <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">
       <div style="font-weight:700;font-size:14px;color:var(--text);flex:1;min-width:0;word-break:break-word;">${esc(g.name)}${g.type ? ` <span style="font-size:10px;font-weight:700;background:#eef2ff;color:#3730a3;padding:1px 6px;border-radius:999px;vertical-align:middle;white-space:nowrap;">${esc(g.type)}</span>` : ''}</div>
-      <span onclick="event.stopPropagation()" style="display:inline-flex;align-items:center;gap:4px;font-size:11px;color:var(--text2);white-space:nowrap;">
+      ${canSeeRate ? `<span onclick="event.stopPropagation()" style="display:inline-flex;align-items:center;gap:4px;font-size:11px;color:var(--text2);white-space:nowrap;">
         Rate
         <input type="number" min="0" step="any" value="${savedRate !== null ? esc(String(savedRate)) : ''}" placeholder="&mdash;" ${canEditRate ? '' : 'disabled'} onchange="saveProductRateInline(${i}, this.value)" style="width:70px;padding:3px 5px;border:1px solid var(--border);border-radius:5px;text-align:right;">
         ${canEditRate ? `<button type="button" onclick="event.stopPropagation(); openAddToProductModal(${i})" title="Add another product's jobs (past and future) into this one" style="width:20px;height:20px;line-height:1;padding:0;border:1px solid var(--border);border-radius:5px;background:#fff;color:var(--text2);font-weight:700;cursor:pointer;">&plus;</button>` : ''}
-      </span>
+      </span>` : ''}
     </div>
     <div style="font-size:12px;color:var(--text2);margin-top:4px;">${esc(companies) || '&mdash;'}</div>
-    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:10px;font-size:12px;">
+    <div style="display:grid;grid-template-columns:repeat(${statCols},1fr);gap:8px;margin-top:10px;font-size:12px;">
       <div><div style="color:var(--text3);font-size:10px;text-transform:uppercase;">Jobs</div><div style="font-weight:700;">${g.jobs.length}</div></div>
       <div><div style="color:var(--text3);font-size:10px;text-transform:uppercase;">Cartons</div><div style="font-weight:700;">${g.cartons.toLocaleString()}</div></div>
-      <div><div style="color:var(--text3);font-size:10px;text-transform:uppercase;">Revenue</div><div style="font-weight:700;">${g.revenue > 0 ? fmtRate(g.revenue) : '&mdash;'}</div></div>
-      <div><div style="color:var(--text3);font-size:10px;text-transform:uppercase;">Avg Rate</div><div style="font-weight:700;">${avgRate ? fmtRate(avgRate) : '&mdash;'}</div></div>
+      ${canSeeRevenue ? `<div><div style="color:var(--text3);font-size:10px;text-transform:uppercase;">Revenue</div><div style="font-weight:700;">${g.revenue > 0 ? fmtRate(g.revenue) : '&mdash;'}</div></div>
+      <div><div style="color:var(--text3);font-size:10px;text-transform:uppercase;">Avg Rate</div><div style="font-weight:700;">${avgRate ? fmtRate(avgRate) : '&mdash;'}</div></div>` : ''}
     </div>
   </div>`;
 }
@@ -27432,6 +27462,7 @@ let _accRegTab = 'jobs';
 const ACC_REG_TABS = [
   ['jobs', 'Jobs'],
   ['reports', 'Reports'],
+  ['products', 'Products'],
   ['users', 'Users'],
 ];
 // Keys + order for the Jobs tab, matching the exact button list given:
@@ -27476,10 +27507,23 @@ const ACC_INVENTORY_TAB_ROWS = [
 ];
 // Reports tab — every row is 2-state (view/hidden). Reports are read-only,
 // so there's no "edit" tier to give any of them.
+// 2026-09-18: added rpt_sale_report / rpt_sale_report_totals (both live
+// gates — see ROLE_PERMISSION_DEFAULTS in server.js for what dropped).
 const ACC_REPORTS_TAB_ROWS = [
   { key: 'reports_tab_access',              type: 'tab' },
   { key: 'rpt_manual_job_card_consumption', type: 'tab' },
   { key: 'rpt_jobs_report',                 type: 'tab' },
+  { key: 'rpt_sale_report',                 type: 'tab' },
+  { key: 'rpt_sale_report_totals',          type: 'tab' },
+];
+// Products tab (new 2026-09-18) — all three are live gates (setMode(),
+// productTileHtml()). Rate is 'button' (3-state: Edit the tile's Rate /
+// View it read-only / Hidden entirely); Revenue is 'tab' (2-state — it's
+// pure display, nothing to "edit").
+const ACC_PRODUCTS_TAB_ROWS = [
+  { key: 'products_tab_access',  type: 'tab' },
+  { key: 'products_btn_rate',    type: 'button' },
+  { key: 'products_btn_revenue', type: 'tab' },
 ];
 // Users tab. user_accessregister_tab_access is special-cased in
 // accGroupRow: every role except super_admin renders as a locked HIDDEN
@@ -27501,7 +27545,7 @@ const ACC_USERS_TAB_ROWS = [
 // matching ROLE_PERMISSION_DEFAULTS block server-side) when a new tab
 // gets built — everything else (rendering, click-to-cycle, tab switcher)
 // already works generically off this map.
-const ACC_TAB_ROWS = { jobs: ACC_JOBS_TAB_ROWS, inventory: ACC_INVENTORY_TAB_ROWS, reports: ACC_REPORTS_TAB_ROWS, users: ACC_USERS_TAB_ROWS };
+const ACC_TAB_ROWS = { jobs: ACC_JOBS_TAB_ROWS, inventory: ACC_INVENTORY_TAB_ROWS, reports: ACC_REPORTS_TAB_ROWS, products: ACC_PRODUCTS_TAB_ROWS, users: ACC_USERS_TAB_ROWS };
 // key -> row type, flattened across every built tab. Used by
 // cycleRolePermission to pick the 2-state or 3-state cycle for a click.
 const ACC_ROW_TYPE = Object.fromEntries(Object.values(ACC_TAB_ROWS).flat().map(r => [r.key, r.type]));
