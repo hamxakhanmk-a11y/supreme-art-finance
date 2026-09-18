@@ -285,7 +285,7 @@ function getDb() {
 // (ROLE_PERMS[key] is always a truthy {} once the cache has loaded once,
 // even with zero rows — see refreshRolePermissions), which would lock
 // Sale Report and the Product Rate tab down to Super Admin only.
-const SCHEMA_VERSION = 'v2026-09-18-finance-access-register-v2';
+const SCHEMA_VERSION = 'v2026-09-18-finance-cartons-packets';
 
 // This app shares its Neon database with the Job Tracker app (it started as
 // a copy of it). Both run initDb() at boot, so they must NOT share the one
@@ -1574,6 +1574,14 @@ async function initDb() {
     // has a sane figure.
     await sql`ALTER TABLE jobs ADD COLUMN IF NOT EXISTS rate    NUMERIC`;
     await sql`ALTER TABLE jobs ADD COLUMN IF NOT EXISTS tax_pct NUMERIC NOT NULL DEFAULT 18`;
+    // Cartons/Packets override. The figure normally comes from the
+    // tracker's own Pasting / Ready-to-Deliver station entry
+    // (particulars.ready_packets_qty), which this app only ever reads —
+    // overwriting that JSONB row would destroy the station's per-pass
+    // breakdown the tracker still renders. So a finance-side correction
+    // lands in its own additive column instead: set means "use this on
+    // the invoice", NULL means "fall back to what the station recorded".
+    await sql`ALTER TABLE jobs ADD COLUMN IF NOT EXISTS cartons_packets NUMERIC`;
     // Product Rate table: Hamza maintains one rate per product name here;
     // any job whose name hasn't been priced yet (rate IS NULL) suggests
     // this as its default when someone opens the Pricing section — see
@@ -1944,6 +1952,8 @@ const FINANCE_JOB_WRITES_ALLOWED = [
     && body.stage_index >= READY_TO_DELIVER_INDEX],
   // Set a job's Rate / Tax % (route checks delivery_write)
   ['PATCH',  /^\/api\/jobs\/\d+\/pricing$/],
+  // Set a job's Cartons/Packets override (route checks delivery_write)
+  ['PATCH',  /^\/api\/jobs\/\d+\/cartons-packets$/],
 ];
 app.use((req, res, next) => {
   if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') return next();
@@ -6751,6 +6761,38 @@ app.patch('/api/jobs/:id/pricing', requireDeliveryWriter, async (req, res) => {
       entityId: id,
       summary: `Job E-${id} pricing set: rate ${rate === null ? '—' : rate}, tax ${taxPct}%`,
       metadata: { rate, tax_pct: taxPct, prior_rate: rows[0].rate, prior_tax_pct: rows[0].tax_pct },
+    });
+    res.json(updated[0]);
+  } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
+});
+
+// Cartons/Packets override for one job — the figure shown next to Unit
+// Cartons on the Record Delivery form. Blank/empty clears the override so
+// the display falls back to the Pasting station's own ready_packets_qty.
+// Job-level (not per-delivery), same as Rate: one job, one figure.
+app.patch('/api/jobs/:id/cartons-packets', requireDeliveryWriter, async (req, res) => {
+  try {
+    await dbReady;
+    const sql = getDb();
+    const id = parseInt(req.params.id, 10);
+    const raw = req.body?.cartons_packets;
+    const value = (raw === null || raw === undefined || String(raw).trim() === '') ? null : Number(raw);
+    if (value !== null && (!Number.isFinite(value) || value < 0)) {
+      return res.status(400).json({ error: 'Cartons/Packets must be a non-negative number.' });
+    }
+    const rows = await sql`SELECT id, cartons_packets FROM jobs WHERE id = ${id} AND deleted_at IS NULL`;
+    if (!rows.length) return res.status(404).json({ error: 'Job not found' });
+    const updated = await sql`
+      UPDATE jobs SET cartons_packets = ${value}
+       WHERE id = ${id}
+       RETURNING *
+    `;
+    await logAudit(sql, req, {
+      action: 'job.cartons_packets.update',
+      entityType: 'job',
+      entityId: id,
+      summary: `Job E-${id} Cartons/Packets set to ${value === null ? '— (station figure)' : value}`,
+      metadata: { cartons_packets: value, prior: rows[0].cartons_packets },
     });
     res.json(updated[0]);
   } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }

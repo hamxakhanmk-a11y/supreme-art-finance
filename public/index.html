@@ -3950,6 +3950,19 @@ function readyCartonsTotal(j) {
   }
   return 0;
 }
+// "Cartons/Packets" as this app shows it: the finance-side override
+// (jobs.cartons_packets, set on the Record Delivery form) when one exists,
+// otherwise whatever the tracker's Pasting station recorded. The station's
+// own JSONB row is never overwritten — see the column's comment in
+// server.js for why.
+function cartonsPacketsFor(j) {
+  if (!j) return 0;
+  if (j.cartons_packets !== null && j.cartons_packets !== undefined && j.cartons_packets !== '') {
+    const n = Number(j.cartons_packets);
+    if (Number.isFinite(n)) return n;
+  }
+  return readyPacketsQtyTotal(j);
+}
 // "Cartons/Packets" — the ready_packets_qty field the Pasting operator (and
 // Ready to Deliver/QC) write in their own station entry, under "Packets /
 // Cartons". Distinct from Unit Cartons: this is a physical carton/packet
@@ -12678,7 +12691,7 @@ function buildSaleReportRows() {
     if (cf.coatings.length && !cf.coatings.includes(coatingsVal)) continue;
     if (cf.rate.length     && !cf.rate.includes(rateLabel))    continue;
     const cs = companySettingsFor(j.client);
-    const cartonsPackets = readyPacketsQtyTotal(j);
+    const cartonsPackets = cartonsPacketsFor(j);
     deliveriesList.forEach((d, idx) => {
       const poNo    = (d && d.po_no    ? String(d.po_no).trim()    : '') || (j.ref || '');
       const batchNo = (d && d.batch_no ? String(d.batch_no).trim() : '') || (j.bno || '');
@@ -20542,7 +20555,7 @@ function deliveriesSection(j, opts) {
   // Deliver station wrote), not per-delivery — same value shows on every
   // card below, same way Rate/Company/etc. repeat per shipment row in the
   // Sale Report.
-  const cartonsPackets = readyPacketsQtyTotal(j);
+  const cartonsPackets = cartonsPacketsFor(j);
   const fieldBox = (label, valueHtml) => `<div style="min-width:0;"><div style="font-size:9px;color:var(--text2);text-transform:uppercase;letter-spacing:0.4px;margin-bottom:2px;">${label}</div><div style="font-size:12.5px;">${valueHtml}</div></div>`;
   // Each recorded delivery gets its own yellow-tinted card (not a table
   // row) — a table row packed 7+ tiny inputs into one squeezed line;
@@ -20575,7 +20588,9 @@ function deliveriesSection(j, opts) {
           </div>
           <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(95px,1fr));gap:10px;">
             ${fieldBox(countLabel, editCell(i, 'cartons', ctns, { title: 'Editing this changes Delivered Qty / stage — recompute is automatic.' }))}
-            ${fieldBox('Cartons/Packets', cartonsPackets > 0 ? `<b>${cartonsPackets.toLocaleString()}</b>` : '&mdash;')}
+            ${fieldBox('Cartons/Packets', canEditEntries
+              ? `<input type="number" min="0" step="any" value="${cartonsPackets > 0 ? cartonsPackets : ''}" placeholder="&mdash;" title="Job-level figure — editing it here changes it for every shipment on this job. Clear the box to fall back to the Pasting station's own number." onchange="saveCartonsPackets(${j.id}, this.value)" style="width:100%;padding:4px 6px;border:1px solid var(--border);border-radius:4px;box-sizing:border-box;font-size:12px;">`
+              : (cartonsPackets > 0 ? `<b>${cartonsPackets.toLocaleString()}</b>` : '&mdash;'))}
             ${isShadeCard ? '' : fieldBox('PO No.', editCell(i, 'po_no', po))}
             ${isShadeCard ? '' : fieldBox('Batch No.', editCell(i, 'batch_no', bat))}
             ${fieldBox('E-FBR No.', editCell(i, 'fbr_no', fbr))}
@@ -20618,7 +20633,7 @@ function deliveriesSection(j, opts) {
           </div>
           <div style="min-width:0;">
             <label style="font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:0.4px;display:block;margin-bottom:2px;">Cartons/Packets</label>
-            <div title="Read-only — this is the Packets/Cartons figure the Pasting/Ready to Deliver station wrote, not something entered here." style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;box-sizing:border-box;background:#f3f4f6;color:var(--text2);font-weight:600;">${cartonsPackets > 0 ? cartonsPackets.toLocaleString() : '&mdash;'}</div>
+            <input type="number" min="0" step="any" value="${cartonsPackets > 0 ? cartonsPackets : ''}" placeholder="${readyPacketsQtyTotal(j) > 0 ? readyPacketsQtyTotal(j) : 'e.g. 76'}" title="Defaults to what the Pasting/Ready to Deliver station recorded — type a different figure to override it for invoicing. Saves on its own; clear the box to go back to the station's number." onchange="saveCartonsPackets(${j.id}, this.value)" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;box-sizing:border-box;font-weight:600;">
           </div>
           <div style="min-width:0;">
             <label style="font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:0.4px;display:block;margin-bottom:2px;">Date *</label>
@@ -21287,6 +21302,27 @@ async function recordDelivery(jobId) {
 // just this one field. Re-renders the job card in place so the edited
 // value + any dependent view (e.g. Sale Report row) stays in sync without
 // a full reload.
+// Save the job's Cartons/Packets override (blank clears it, falling back
+// to the Pasting station's own figure). Job-level, so it moves every
+// shipment row for this job at once — same shape as a Rate edit.
+async function saveCartonsPackets(jobId, valueStr) {
+  const raw = String(valueStr == null ? '' : valueStr).trim();
+  if (raw !== '') {
+    const n = parseFloat(raw.replace(/[^0-9.\-]/g, ''));
+    if (!Number.isFinite(n) || n < 0) { notify('Cartons/Packets must be a positive number'); render(); return; }
+  }
+  showSaving(true);
+  try {
+    const updated = await api('PATCH', `/api/jobs/${jobId}/cartons-packets`, { cartons_packets: raw === '' ? null : raw });
+    const ix = jobs.findIndex(x => x.id === jobId);
+    if (ix >= 0) jobs[ix] = updated;
+    notify('Saved');
+    if (document.querySelector('.job-edit-modal')) { render(); setTimeout(() => openEdit(jobId), 50); }
+    if (document.getElementById('sr-content')) renderSaleReport();
+  } catch (e) { notify('Error: ' + e.message); }
+  showSaving(false);
+}
+
 async function saveDeliveryEntryField(jobId, index, field, valueStr) {
   if (field === 'cartons') {
     const n = parseFloat(String(valueStr).replace(/[^0-9.\-]/g, ''));
