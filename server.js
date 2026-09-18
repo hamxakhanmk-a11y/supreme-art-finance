@@ -275,7 +275,9 @@ function getDb() {
 // otherwise hit the fast-path and never widen the CHECK or run that copy.
 // Bumped again for jobs.rate / jobs.tax_pct and finance.product_rates.
 // Bumped again for finance.company_settings (NTN, Destination per company).
-const SCHEMA_VERSION = 'v2026-09-17-finance-company-settings';
+// Bumped again for finance.product_aliases (fold a differently-named job
+// into an existing product, past and future).
+const SCHEMA_VERSION = 'v2026-09-18-finance-product-aliases';
 
 // This app shares its Neon database with the Job Tracker app (it started as
 // a copy of it). Both run initDb() at boot, so they must NOT share the one
@@ -1576,6 +1578,23 @@ async function initDb() {
         company     TEXT NOT NULL UNIQUE,
         ntn         TEXT,
         destination TEXT,
+        updated_by  TEXT,
+        updated_at  TIMESTAMPTZ DEFAULT NOW()
+      )
+    `;
+    // Product aliases: lets Hamza fold a differently-named job into an
+    // existing product tile from the Product Rate tab's "+" button. `alias`
+    // is the OTHER product's own normalized name (what its jobs would
+    // otherwise group under on their own); `canonical` is the target
+    // tile's display name. Every job whose name resolves through this
+    // table — past and future — counts as `canonical` for grouping AND
+    // for the Product Rate suggestion (productRateFor resolves aliases
+    // first), which is what makes the target tile's Rate apply to the
+    // newly-folded-in jobs too.
+    await sql`
+      CREATE TABLE IF NOT EXISTS finance.product_aliases (
+        alias       TEXT PRIMARY KEY,
+        canonical   TEXT NOT NULL,
         updated_by  TEXT,
         updated_at  TIMESTAMPTZ DEFAULT NOW()
       )
@@ -6782,6 +6801,59 @@ app.delete('/api/product-rates/:id', requireDeliveryWriter, async (req, res) => 
     await logAudit(sql, req, {
       action: 'product_rate.delete', entityType: 'product_rate', entityId: id,
       summary: `Product Rate removed: "${deleted[0].product}"`,
+    });
+    res.json({ ok: true });
+  } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
+});
+
+// ── Product Aliases (Supreme Art Finance only) ────────────────────
+// Folds a differently-named job into an existing product tile (the
+// Product Rate tab's "+" button). `alias` is a normalized product name
+// (what its own jobs would otherwise group under); `canonical` is the
+// target tile's display name. buildProductGroups() and productRateFor()
+// on the client both resolve through this table first.
+app.get('/api/product-aliases', requireAuth, async (req, res) => {
+  try {
+    await dbReady;
+    const sql = getDb();
+    const rows = await sql`SELECT * FROM finance.product_aliases ORDER BY alias ASC`;
+    res.json(rows);
+  } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
+});
+app.post('/api/product-aliases', requireDeliveryWriter, async (req, res) => {
+  try {
+    await dbReady;
+    const sql = getDb();
+    const alias     = String(req.body?.alias     ?? '').trim().toLowerCase();
+    const canonical = String(req.body?.canonical ?? '').trim();
+    if (!alias)     return res.status(400).json({ error: 'Alias product name is required.' });
+    if (!canonical) return res.status(400).json({ error: 'Target product name is required.' });
+    if (alias === canonical.trim().toLowerCase()) {
+      return res.status(400).json({ error: 'A product cannot alias itself.' });
+    }
+    const inserted = await sql`
+      INSERT INTO finance.product_aliases (alias, canonical, updated_by, updated_at)
+      VALUES (${alias}, ${canonical}, ${req.user.email}, NOW())
+      ON CONFLICT (alias) DO UPDATE SET canonical = EXCLUDED.canonical, updated_by = EXCLUDED.updated_by, updated_at = NOW()
+      RETURNING *
+    `;
+    await logAudit(sql, req, {
+      action: 'product_alias.create', entityType: 'product_alias', entityId: alias,
+      summary: `Product Alias added: "${alias}" now folds into "${canonical}"`,
+    });
+    res.json(inserted[0]);
+  } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
+});
+app.delete('/api/product-aliases/:alias', requireDeliveryWriter, async (req, res) => {
+  try {
+    await dbReady;
+    const sql = getDb();
+    const alias = String(req.params.alias || '').trim().toLowerCase();
+    const deleted = await sql`DELETE FROM finance.product_aliases WHERE alias = ${alias} RETURNING *`;
+    if (!deleted.length) return res.status(404).json({ error: 'Product Alias not found' });
+    await logAudit(sql, req, {
+      action: 'product_alias.delete', entityType: 'product_alias', entityId: alias,
+      summary: `Product Alias removed: "${alias}" no longer folds into "${deleted[0].canonical}"`,
     });
     res.json({ ok: true });
   } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }

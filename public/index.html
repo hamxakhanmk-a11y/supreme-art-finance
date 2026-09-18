@@ -3623,6 +3623,7 @@ function particularsRowsFor(job) {
 let jobs = [];
 let inventory = [];          // cached inventory items (refreshed on load + after mutations)
 let productRates = [];       // cached Product Rate table (Supreme Art Finance only) — see loadProductRates()
+let productAliases = [];     // cached Product Aliases (Supreme Art Finance only) — see loadProductAliases()
 let companySettings = [];    // cached Company Settings (NTN, Destination) — see loadCompanySettings()
 let stockGroups = [];        // cached stock groups entity (client/product/po_qty template shared across sub jobs)
 // Helper: look up a group entity by id — returns undefined if not
@@ -4797,11 +4798,27 @@ async function loadProductRates() {
     productRates = [];
   }
 }
+// Product Aliases (Supreme Art Finance only) — folds a differently-named
+// job into an existing product tile (Product Rate tab's "+" button). See
+// resolveProductKey()/buildProductGroups(). Loaded once at boot; refreshed
+// after adding an alias.
+async function loadProductAliases() {
+  try {
+    productAliases = await api('GET', '/api/product-aliases');
+  } catch (e) {
+    productAliases = [];
+  }
+}
 // Case-insensitive lookup by product name — a job's own name IS the
 // product it's printing, so this is what a not-yet-priced job suggests.
+// Resolves through productAliases first, so a job folded into another
+// product (via the "+" button) suggests THAT product's rate, not its own
+// name's (usually nonexistent) rate row.
 function productRateFor(productName) {
-  const name = String(productName || '').trim().toLowerCase();
-  if (!name) return null;
+  const own = String(productName || '').trim().toLowerCase();
+  if (!own) return null;
+  const aliasRow = productAliases.find(a => a.alias === own);
+  const name = aliasRow ? String(aliasRow.canonical || '').trim().toLowerCase() : own;
   const row = productRates.find(r => String(r.product || '').trim().toLowerCase() === name);
   return row ? Number(row.rate) : null;
 }
@@ -20233,10 +20250,15 @@ function deliveriesSection(j, opts) {
   // Rate/Tax ride along with the delivery instead of a separate Save
   // Pricing step — whoever records the shipment confirms (or overrides)
   // the price at the same time. Pre-filled from the job's own saved rate,
-  // or the Product Rate table's suggestion once one exists.
+  // or — once one exists — the Product Rate table's suggestion, filled
+  // in as the actual value (not just a placeholder hint), so the
+  // product's Rate really does apply to every new delivery by default
+  // unless someone edits it here.
   const rEff = effectiveRate(j);
-  const rateFieldPrefill = (j.rate !== null && j.rate !== undefined && j.rate !== '') ? j.rate : '';
-  const rateFieldPlaceholder = (rEff && rEff.suggested) ? `Suggested: ${fmtRate(rEff.value)}` : 'e.g. 12.50';
+  const rateFieldPrefill = (j.rate !== null && j.rate !== undefined && j.rate !== '')
+    ? j.rate
+    : (rEff ? rEff.value : '');
+  const rateFieldPlaceholder = 'e.g. 12.50';
   const taxFieldPrefill = (j.tax_pct !== null && j.tax_pct !== undefined && j.tax_pct !== '') ? j.tax_pct : 18;
 
   const rows = list.length
@@ -20324,7 +20346,7 @@ function deliveriesSection(j, opts) {
           </div>
           ${showPricingFields ? `<div style="min-width:0;">
             <label style="font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:0.4px;display:block;margin-bottom:2px;">Rate / Carton</label>
-            <input type="number" id="deliv-rate" min="0" step="any" value="${esc(String(rateFieldPrefill))}" placeholder="${esc(rateFieldPlaceholder)}" title="Same rate for the whole job until changed here. Leave blank to fall back to the Product Rate table's current suggestion." style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;box-sizing:border-box;">
+            <input type="number" id="deliv-rate" min="0" step="any" value="${esc(String(rateFieldPrefill))}" placeholder="${esc(rateFieldPlaceholder)}" title="Pre-filled from the job's own rate, or the Product Rate tab's rate for this product. Edit it to override just this job — leave blank to keep following the Product Rate tab's current rate on future deliveries." style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;box-sizing:border-box;">
           </div>
           <div style="min-width:0;">
             <label style="font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:0.4px;display:block;margin-bottom:2px;">Sale Tax %</label>
@@ -20425,6 +20447,21 @@ function detectProductType(name) {
 // date. Anchored on the Delivered stamp when there is one, falling back
 // to the job's created date so a not-yet-delivered job can still be
 // scoped by "This month" etc.
+// Resolves a job's own name to the product it should group under: its own
+// name, unless an alias row (added via a tile's "+" button) folds it into
+// a different product's canonical name. Returns { key, name } — key is
+// what groups are keyed by (lowercase), name is the display name (the
+// canonical product's own name when aliased, so every folded-in job shows
+// under one consistent title rather than its own, possibly-different one).
+function resolveProductKey(jobName) {
+  const own = String(jobName || '').trim().toLowerCase();
+  const aliasRow = productAliases.find(a => a.alias === own);
+  if (aliasRow) {
+    const canonical = String(aliasRow.canonical || '').trim();
+    return { key: canonical.toLowerCase(), name: canonical };
+  }
+  return { key: own, name: String(jobName || '').trim() };
+}
 function buildProductGroups() {
   const bounds = resolveDateFilterBounds(productsFilter.dateRange, productsFilter.dfrom, productsFilter.dto);
   const groups = new Map();
@@ -20437,9 +20474,10 @@ function buildProductGroups() {
       if (bounds.from !== null && anchor < bounds.from) continue;
       if (bounds.to   !== null && anchor > bounds.to)   continue;
     }
-    const key = name.toLowerCase();
+    const resolved = resolveProductKey(name);
+    const key = resolved.key;
     if (!groups.has(key)) {
-      groups.set(key, { key, name, companies: new Set(), jobs: [], cartons: 0, revenue: 0, type: detectProductType(name) });
+      groups.set(key, { key, name: resolved.name, companies: new Set(), jobs: [], cartons: 0, revenue: 0, type: detectProductType(resolved.name) });
     }
     const g = groups.get(key);
     if (j.client) g.companies.add(String(j.client).trim());
@@ -20523,6 +20561,7 @@ function productTileHtml(g, i) {
       <span onclick="event.stopPropagation()" style="display:inline-flex;align-items:center;gap:4px;font-size:11px;color:var(--text2);white-space:nowrap;">
         Rate
         <input type="number" min="0" step="any" value="${savedRate !== null ? esc(String(savedRate)) : ''}" placeholder="&mdash;" ${canEditRate ? '' : 'disabled'} onchange="saveProductRateInline(${i}, this.value)" style="width:70px;padding:3px 5px;border:1px solid var(--border);border-radius:5px;text-align:right;">
+        ${canEditRate ? `<button type="button" onclick="event.stopPropagation(); openAddToProductModal(${i})" title="Add another product's jobs (past and future) into this one" style="width:20px;height:20px;line-height:1;padding:0;border:1px solid var(--border);border-radius:5px;background:#fff;color:var(--text2);font-weight:700;cursor:pointer;">&plus;</button>` : ''}
       </span>
     </div>
     <div style="font-size:12px;color:var(--text2);margin-top:4px;">${esc(companies) || '&mdash;'}</div>
@@ -20560,26 +20599,92 @@ async function saveProductRateInline(i, valueStr) {
   } catch (e) { notify('Error: ' + e.message); refilterProductsGrid(); }
   showSaving(false);
 }
+// ── "+" — fold another product's jobs into this one ───────────────
+// Adds a finance.product_aliases row (alias = the OTHER product's own
+// name, canonical = this tile's name), so every job with that other name
+// — past AND future — groups, prices, and suggests-rate as THIS product
+// from now on. Candidates are index-based (not the raw name embedded in
+// onclick) so a product name with an apostrophe can't break the markup.
+let __addToProductCandidates = [];
+let __addToProductTargetKey = '';
+function openAddToProductModal(i) {
+  const target = __productGroupsCache[i];
+  if (!target) return;
+  __addToProductTargetKey = target.key;
+  __addToProductCandidates = __productGroupsAll
+    .filter(g => g.key !== target.key)
+    .sort((a, b) => a.name.localeCompare(b.name));
+  openModal(`<div class="modal" onclick="event.stopPropagation()" style="max-width:640px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+      <h2 style="margin:0;font-size:17px;">&plus; Add product to ${esc(target.name)}</h2>
+      <button class="btn btn-sm" onclick="closeModal()" style="padding:2px 8px;font-size:14px;line-height:1;">&times;</button>
+    </div>
+    <div style="font-size:12px;color:var(--text2);margin-bottom:12px;">Pick another product below to fold into <b>${esc(target.name)}</b> — every job with that name, past and future, will count as this product (and use its Rate) from now on.</div>
+    <input id="add-to-product-search" class="filter" placeholder="Search product name..." style="width:100%;box-sizing:border-box;margin-bottom:10px;" oninput="filterAddToProductList()">
+    <div id="add-to-product-list" style="max-height:50vh;overflow-y:auto;border:1px solid var(--border);border-radius:8px;">
+      ${__addToProductCandidates.length ? __addToProductCandidates.map((g, ci) => `
+        <div class="add-to-product-row" data-hay="${esc(g.name.toLowerCase())}" style="padding:8px 12px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;gap:10px;">
+          <div style="min-width:0;">
+            <div style="font-size:13px;font-weight:600;color:var(--text);">${esc(g.name)}${g.type ? ` <span style="font-size:9px;font-weight:700;background:#eef2ff;color:#3730a3;padding:1px 5px;border-radius:999px;vertical-align:middle;">${esc(g.type)}</span>` : ''}</div>
+            <div style="font-size:11px;color:var(--text2);">${esc([...g.companies].sort().join(', ')) || '&mdash;'} &middot; ${g.jobs.length} job${g.jobs.length===1?'':'s'}</div>
+          </div>
+          <button class="btn btn-sm btn-primary" onclick="addProductAlias(${ci})">Add</button>
+        </div>`).join('') : `<div style="text-align:center;color:var(--text3);font-style:italic;padding:16px;">No other products to add.</div>`}
+    </div>
+    <div class="modal-actions"><button class="btn" onclick="closeModal()">Cancel</button></div>
+  </div>`);
+}
+function filterAddToProductList() {
+  const q = (document.getElementById('add-to-product-search') || {}).value || '';
+  const needle = q.trim().toLowerCase();
+  document.querySelectorAll('.add-to-product-row').forEach(row => {
+    const hay = row.getAttribute('data-hay') || '';
+    row.style.display = (!needle || hay.includes(needle)) ? '' : 'none';
+  });
+}
+async function addProductAlias(ci) {
+  const g = __addToProductCandidates[ci];
+  const target = __productGroupsAll.find(x => x.key === __addToProductTargetKey);
+  if (!g || !target) return;
+  showSaving(true);
+  try {
+    await api('POST', '/api/product-aliases', { alias: g.key, canonical: target.name });
+    await loadProductAliases();
+    closeModal();
+    renderProductsTab();
+    notify(`Added — "${g.name}" now folds into "${target.name}"`);
+  } catch (e) { notify('Error: ' + e.message); }
+  showSaving(false);
+}
 // Every shipment across every job sharing this product name, newest
 // first. Job number opens that job's own card (jumping back to Jobs).
 function openProductHistoryModal(i) {
   const g = __productGroupsCache[i];
   if (!g) return;
+  // The product's own standard Rate (top of the tile) — a shipment whose
+  // job rate was edited away from this reads amber/yellow below, so an
+  // override is obvious at a glance against the rest of the history.
+  const rateRow = productRates.find(r => String(r.product || '').trim().toLowerCase() === g.key);
+  const defaultRate = rateRow ? Number(rateRow.rate) : null;
   const rows = [];
   for (const j of g.jobs) {
     const list = Array.isArray(j.deliveries) ? j.deliveries : [];
     const r = effectiveRate(j);
+    const rate = r ? r.value : null;
+    const overridden = defaultRate !== null && rate !== null && Math.abs(rate - defaultRate) > 0.0001;
     list.forEach(d => {
       const cartons = parseFloat(d && d.cartons) || 0;
       rows.push({
         jobId: j.id, client: j.client || '', date: (d && d.date) || '',
         po: (d && d.po_no) || '', fbr: (d && d.fbr_no) || '',
-        invoice: deliveryChallanText(d), cartons, rate: r ? r.value : null,
+        invoice: deliveryChallanText(d), cartons, rate, overridden,
       });
     });
   }
   rows.sort((a, b) => String(b.date).localeCompare(String(a.date)));
-  const body = rows.length ? rows.map(r => `<tr>
+  const body = rows.length ? rows.map(r => {
+    const rateStyle = r.overridden ? 'color:#ca8a04;font-weight:700;' : '';
+    return `<tr>
     <td style="padding:6px 8px;">${esc(r.date)}</td>
     <td style="padding:6px 8px;"><a href="#" onclick="event.preventDefault(); closeModal(); setMode('jobs'); setTimeout(()=>openEdit(${r.jobId}),50);">E-${r.jobId}</a></td>
     <td style="padding:6px 8px;">${esc(r.client)}</td>
@@ -20587,12 +20692,13 @@ function openProductHistoryModal(i) {
     <td style="padding:6px 8px;">${esc(r.fbr)}</td>
     <td style="padding:6px 8px;">${esc(r.invoice)}</td>
     <td style="text-align:right;padding:6px 8px;">${r.cartons.toLocaleString()}</td>
-    <td style="text-align:right;padding:6px 8px;">${r.rate != null ? fmtRate(r.rate) : '&mdash;'}</td>
+    <td style="text-align:right;padding:6px 8px;${rateStyle}" title="${r.overridden ? 'Edited away from this product\'s standard rate (' + fmtRate(defaultRate) + ')' : ''}">${r.rate != null ? fmtRate(r.rate) : '&mdash;'}</td>
     <td style="text-align:right;padding:6px 8px;">${r.rate != null ? fmtRate(r.cartons * r.rate) : '&mdash;'}</td>
-  </tr>`).join('') : `<tr><td colspan="9" style="text-align:center;color:var(--text3);font-style:italic;padding:16px;">No shipments recorded yet.</td></tr>`;
+  </tr>`;
+  }).join('') : `<tr><td colspan="9" style="text-align:center;color:var(--text3);font-style:italic;padding:16px;">No shipments recorded yet.</td></tr>`;
   openModal(`<div class="modal" onclick="event.stopPropagation()" style="max-width:900px;">
     <h2 style="margin:0 0 4px;">${esc(g.name)}</h2>
-    <div style="font-size:12px;color:var(--text2);margin-bottom:12px;">Every shipment across every job with this product name.</div>
+    <div style="font-size:12px;color:var(--text2);margin-bottom:12px;">Every shipment across every job with this product name.${defaultRate !== null ? ' <span style="color:#ca8a04;font-weight:700;">Yellow</span> rate = edited away from this product\'s standard rate.' : ''}</div>
     <div style="max-height:60vh;overflow:auto;">
     <table style="width:100%;border-collapse:collapse;font-size:12px;">
       <thead><tr style="background:#f3f4f6;">
@@ -28460,7 +28566,7 @@ async function init() {
     renderUserChip();
     // Operators can't read inventory (403), so skip the call for them.
     // Everyone else loads jobs + inventory in parallel.
-    const loaders = [loadJobs(), loadPrintingMachines(), loadMachineRoster(), loadProductRates(), loadCompanySettings()];
+    const loaders = [loadJobs(), loadPrintingMachines(), loadMachineRoster(), loadProductRates(), loadProductAliases(), loadCompanySettings()];
     if (!isOperator()) loaders.push(loadInventory());
     await Promise.all(loaders);
     // Route to the same landing tab the login flow uses so a refresh
