@@ -1525,6 +1525,16 @@
 
   /* Progress ribbon */
   .tile-ribbon { display: flex; align-items: center; justify-content: space-between; gap: 4px; padding: 0 2px; }
+  /* Adjusted Packets block on each job tile */
+  .adj-pk-block { display: flex; align-items: center; justify-content: flex-start; gap: 10px; padding: 6px 10px; margin-bottom: 8px; border: 1px solid #bbf7d0; border-radius: 8px; background: #f0fdf4; font-size: 12px; }
+  .adj-pk-block .adj-pk-lbl { font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; color: #166534; font-weight: 800; }
+  .adj-pk-block input { width: 84px; padding: 3px 6px; border: 1px solid #86efac; border-radius: 6px; text-align: right; font-weight: 700; background: #fff; }
+  .adj-pk-block .adj-pk-val { font-weight: 800; color: #166534; }
+  /* keep clear of the DAY / YIELD stats pinned to the top-right of a Track tile */
+  .job-tile > .adj-pk-block { margin-right: 96px; }
+  /* Stage pills / dots are display-only in this app */
+  .rib-dot.rib-static { cursor: default; }
+  .rib-dot.rib-static:hover { transform: none; }
   .rib-dot { flex: 1; height: 7px; border-radius: 20px; border: none; cursor: pointer; padding: 0; transition: transform 0.12s; background: var(--bg3); }
   .rib-dot:hover { transform: scaleY(1.6); }
   .rib-done { background: var(--green-border); }
@@ -2930,6 +2940,11 @@ td.jc-details-cell > input[type="text"] { padding-right: 20px; }
         <div class="report-card-title">Board IN/OUT</div>
         <div class="report-card-desc">Manual Job Card Consumption &mdash; paper issued against a manual job card number, for jobs not tracked in the app.</div>
       </button>
+      <button class="report-card" onclick="openAdjPacketsReport()">
+        <div class="report-card-icon">&#128230;</div>
+        <div class="report-card-title">Adjusted Packets</div>
+        <div class="report-card-desc">Every adjusted job and its adjusted packets. Edit the packets right in the list, and search by job.</div>
+      </button>
     </div>
   </div>
 
@@ -2951,6 +2966,20 @@ td.jc-details-cell > input[type="text"] { padding-right: 20px; }
         <div id="rt-inventory-report" class="rt-pane" style="display:none;"></div>
         <div id="rt-manual-consumption" class="rt-pane" style="display:none;"></div>
         <div id="rt-offcut-consumption" class="rt-pane" style="display:none;"></div>
+      </main>
+    </div>
+  </div>
+
+  <!-- Adjusted Packets group: two columns (Job | Adjusted Packets, editable) with a search box. -->
+  <div id="adjpk-group" class="reports-group" style="display:none;">
+    <div class="reports-layout">
+      <aside class="reports-sidebar">
+        <button class="rsb-back" onclick="exitReportsGroup()" title="Back to Reports">&larr; Back</button>
+        <div class="rsb-section">Adjusted Packets</div>
+        <button class="rsb-item active" data-rt="adjpk"><span class="rsb-icon">&#128230;</span> Adjusted Packets</button>
+      </aside>
+      <main class="reports-content">
+        <div id="rt-adjpk" class="rt-pane"></div>
       </main>
     </div>
   </div>
@@ -5417,13 +5446,13 @@ function renderJobRowCompact(j, opts) {
             : (i === readyIdx
                 ? `moveToReadyAndEdit(${j.id})`
                 : `moveToStage(${j.id},${i})`));
-      const pill = `<span class="stage-pill ${cls}" title="Move to ${esc(s)}" onclick="${handler}" style="cursor:pointer">${SHORT[i]}</span>`;
+      const pill = `<span class="stage-pill ${cls}" title="${esc(s)}" style="cursor:default">${SHORT[i]}</span>`;   // view only
       if (i === 1) {
         // Insert the virtual Pending Stock pill BEFORE Print.
         let psCls = 's-pending';
         if (issued_ || (si > 1)) psCls = 's-done';
         else if (pending_) psCls = regressed_ ? 's-blocked' : 's-active';
-        const psPill = `<span class="arrow">›</span><span class="stage-pill ${psCls}" title="Send to Pending Stock" onclick="moveJobToPendingStock(${j.id})" style="cursor:pointer">Stock</span>`;
+        const psPill = `<span class="arrow">›</span><span class="stage-pill ${psCls}" title="Pending Stock" style="cursor:default">Stock</span>`;
         return `${psPill}<span class="arrow">›</span>${pill}`;
       }
       return `${i>0?'<span class="arrow">›</span>':''}${pill}`;
@@ -5462,6 +5491,7 @@ function renderJobRowCompact(j, opts) {
         : '';
     return `
     <div ${isGroupTile ? '' : `id="cv-tile-${j.id}" `}class="job-card ${pc} ${pending?'is-pending':''} ${done?'is-done':''} ${(selectedNewJobIds.has(j.id)||selectedFinalizedJobIds.has(j.id))?'is-selected':''}"${isGroupTile ? '' : ` onclick="onJobTileClick(event, ${j.id})" style="cursor:pointer;${_finalizedJobIds.has(j.id)?'background:rgba(124,58,237,0.07);border-color:#ddd6fe;':''}" title="Click to open Job Card"`}>
+      ${isGroupTile ? '' : adjPacketsBlockHtml(j)}
       <div class="job-top">
         <div class="job-meta">
           <div class="job-id-row">
@@ -5500,9 +5530,6 @@ function renderJobRowCompact(j, opts) {
             <button class="btn btn-sm ${(isNew || isCtp) ? '' : 'btn-primary'}" onclick="openEdit(${j.id})" title="Open the job card to view its details and record deliveries.">View</button>
             <button class="btn btn-sm" onclick="openHistory(${j.id})">History</button>
             ${(canWriteJobs() && !_finalizedJobIds.has(j.id)) ? `<button class="btn btn-sm ceo-hide" onclick="openDuplicateJob(${j.id})" title="Make a new job card pre-filled with this job's data — useful for repeat orders.">&#128203; Duplicate</button>` : ''}
-            ${(!_finalizedJobIds.has(j.id) && canLinkJobs()) ? (j.linked_job_id
-              ? `<button class="btn btn-sm ceo-hide" onclick="unlinkJob(${j.id})" title="Remove the link with Job E-${j.linked_job_id}">&#128279; Unlink</button>`
-              : `<button class="btn btn-sm ceo-hide" onclick="openLinkJobPicker(${j.id})" title="Link this job with another job card printed together on the same run">&#128279; Link Job</button>`) : ''}
             ${canPrintJobCard() ? `<button class="btn btn-sm ${(j.print_count || 0) > 0 ? 'is-printed' : ''}" onclick="printJobCard(${j.id})" title="${(j.print_count || 0) > 0 ? `Printed ${j.print_count} time${j.print_count===1?'':'s'}${j.last_printed_at?' · last '+fmtDMYT(j.last_printed_at):''}` : 'Print job card'}">Print</button>` : ''}
             ${(!done && canWriteJobs())?`<button class="btn btn-sm btn-danger ceo-hide" onclick="toggleBlock(${j.id})">${blocked?'Unblock':'Block'}</button>`:''}
             ${canDeleteJobs()?`<button class="btn btn-sm btn-danger" onclick="deleteJob(${j.id})" title="Admin only">Delete</button>`:''}
@@ -5747,9 +5774,9 @@ function renderJobCard(j, opts) {
     const handler = (i === STAGES.length - 1)
       ? `moveToDeliveredAndEdit(${j.id})`
       : (i === readyIdxR ? `moveToReadyAndEdit(${j.id})` : `moveToStage(${j.id},${i})`);
-    const dot = `<button class="rib-dot ${cls}" title="Move to ${esc(s)}" onclick="${handler}"></button>`;
+    const dot = `<button type="button" class="rib-dot rib-static ${cls}" title="${esc(s)}" tabindex="-1"></button>`;   // view only
     if (i === 1) {
-      const stockDot = `<button class="rib-dot ${stockDotCls}" title="Send to Pending Stock" onclick="moveJobToPendingStock(${j.id})"></button>`;
+      const stockDot = `<button type="button" class="rib-dot rib-static ${stockDotCls}" title="Pending Stock" tabindex="-1"></button>`;
       return stockDot + dot;
     }
     return dot;
@@ -5889,9 +5916,6 @@ function renderJobCard(j, opts) {
         <button onclick="closeJobMore(this); openEdit(${j.id})">View</button>
         <button onclick="closeJobMore(this); openHistory(${j.id})">History</button>
         ${(canWriteJobs() && !_finalizedJobIds.has(j.id)) ? `<button class="ceo-hide" onclick="closeJobMore(this); openDuplicateJob(${j.id})">Duplicate</button>` : ''}
-        ${(!_finalizedJobIds.has(j.id) && canLinkJobs()) ? (j.linked_job_id
-          ? `<button class="ceo-hide" onclick="closeJobMore(this); unlinkJob(${j.id})">Unlink (E-${j.linked_job_id})</button>`
-          : `<button class="ceo-hide" onclick="closeJobMore(this); openLinkJobPicker(${j.id})">Link Job</button>`) : ''}
         ${canWriteJobs() && !clientPreview && !j.stock_group_name ? `<button class="ceo-hide" onclick="closeJobMore(this); openAddToGroupModal(${j.id})">&#128230; Add to Job Group</button>` : ''}
         ${canWriteJobs() && !clientPreview && j.stock_group_name ? `<button class="ceo-hide" onclick="closeJobMore(this); removeJobFromGroup(${j.id},${jsStr(j.stock_group_name)})">&#128230; Remove from Job Group</button>` : ''}
         ${canPrintJobCard() ? `<button onclick="closeJobMore(this); printJobCard(${j.id})" class="${(j.print_count || 0) > 0 ? 'is-printed' : ''}" title="${(j.print_count || 0) > 0 ? `Printed ${j.print_count} time${j.print_count===1?'':'s'}${j.last_printed_at?' · last '+fmtDMYT(j.last_printed_at):''}` : 'Print job card'}">Print</button>` : ''}
@@ -5978,6 +6002,7 @@ function renderJobCard(j, opts) {
     : clientTintStyle;
   return `
   <div id="cv-tile-${j.id}" class="job-tile ${pc} ${pending?'is-pending':''} ${done?'is-done':''} ${blocked?'is-blocked':''} ${clientPreview?'is-client-preview':''} ${(selectedNewJobIds.has(j.id)||selectedFinalizedJobIds.has(j.id))?'is-selected':''}"${tileAttr}>
+    ${clientPreview ? '' : adjPacketsBlockHtml(j)}
     ${sideStats}
     ${clientTopRow}
     <div class="tile-head">
@@ -14950,6 +14975,93 @@ let _adjustments = {};
 let _adjJobManualRefs = {};
 let _manualPaperKeys = new Set();
 
+// ── Adjusted Packets ─────────────────────────────────────────────
+// How many packets a job's wastage adjustment covers (job_adjustments.manual_packets). Shown on top of every job tile
+// and as a two-column report; editable wherever an adjustment exists and hasn't been posted.
+function adjPacketsInputHtml(j) {
+  const adj = _adjustments[j.id];
+  if (!adj) return '<span class="adj-pk-val">&mdash;</span>';
+  const val = Number(adj.manual_packets);
+  if (adj.posted || !canWastageAdjust()) return '<span class="adj-pk-val">' + val.toLocaleString() + (adj.posted ? ' <span title="Posted - can no longer be edited">&#128274;</span>' : '') + '</span>';
+  return '<input type="number" min="0.5" step="0.5" value="' + val + '" onclick="event.stopPropagation()" onchange="saveAdjustedPackets(' + j.id + ', this.value)" title="Change the adjusted packets for this job">';
+}
+function adjPacketsBlockHtml(j) {
+  if (!j || !j.id) return '';
+  return '<div class="adj-pk-block" onclick="event.stopPropagation()"><span class="adj-pk-lbl">Adjusted Packets</span>' + adjPacketsInputHtml(j) + '</div>';
+}
+function refreshAdjPacketViews() {
+  if (typeof render === 'function') render();
+  if (document.getElementById('adjpk-rows')) renderAdjPacketsRows();
+}
+async function saveAdjustedPackets(jobId, valueStr) {
+  if (!canWastageAdjust()) return;
+  const adj = _adjustments[jobId];
+  const j = jobs.find(x => x.id === jobId);
+  if (!adj || !j) { notify('Only adjusted jobs have adjusted packets - use Adjust on the job first.'); refreshAdjPacketViews(); return; }
+  if (adj.posted) { notify('This adjustment is posted and can no longer be edited.'); refreshAdjPacketViews(); return; }
+  const packets = parseFloat(String(valueStr == null ? '' : valueStr).trim());
+  const s = _wastageAdjSettings;
+  if (!Number.isFinite(packets) || packets <= 0) { notify('Adjusted packets must be more than 0.'); refreshAdjPacketViews(); return; }
+  if (packets > s.max_packets_per_job) { notify('Max ' + s.max_packets_per_job + ' packets per job.'); refreshAdjPacketViews(); return; }
+  const invIt = j.inventory_item_id ? inventory.find(i => i.id === j.inventory_item_id) : null;
+  // sheets per packet for THIS job (same formula the Adjust panel uses)
+  const ps = packetSize(invIt ? invIt.paper_type : j.paper || '') * jobCutPieces(j);
+  const manual_sheets = Math.round(packets * ps);
+  showSaving(true);
+  try {
+    await api('PATCH', '/api/wastage-adjustment/adjust/' + jobId + '/packets', { manual_packets: packets, manual_sheets });
+    await loadWastageAdjData();
+    notify('Job E-' + jobId + ': adjusted packets set to ' + packets + '.');
+  } catch (e) { notify('Error: ' + e.message); }
+  showSaving(false);
+  refreshAdjPacketViews();
+}
+// Report: Job | Adjusted Packets (editable), with a search box. The search text stays until the page is refreshed.
+const adjPkReportState = { q: '' };
+function openAdjPacketsReport() {
+  openReportsGroup('adjpk-group');
+  renderAdjPacketsReport();
+}
+function setAdjPkQ(v) { adjPkReportState.q = String(v || ''); renderAdjPacketsRows(); }
+function renderAdjPacketsReport() {
+  const pane = document.getElementById('rt-adjpk');
+  if (!pane) return;
+  pane.innerHTML =
+    '<div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap;">' +
+      '<h2 style="margin:0;font-size:20px;">Adjusted Packets</h2>' +
+      '<span style="color:var(--text2);font-size:12px;">Every adjusted job and its adjusted packets. Change the packets right in the list.</span>' +
+    '</div>' +
+    '<div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:14px;margin-bottom:14px;display:flex;gap:14px;align-items:flex-end;flex-wrap:wrap;">' +
+      '<div><div class="dash-flbl">Search (Job No. / Name / Company)</div>' +
+      '<input class="filter" type="text" id="adjpk-q" value="' + esc(adjPkReportState.q) + '" placeholder="e.g. 424 or biolabs" oninput="setAdjPkQ(this.value)" style="min-width:260px;"></div>' +
+      '<span id="adjpk-count" style="margin-left:auto;font-size:12px;color:var(--text2);align-self:center;"></span>' +
+    '</div>' +
+    '<div id="adjpk-rows"></div>';
+  renderAdjPacketsRows();
+}
+function renderAdjPacketsRows() {
+  const el = document.getElementById('adjpk-rows');
+  if (!el) return;
+  const q = adjPkReportState.q.trim().toLowerCase();
+  const qId = q.replace(/^e-?/, '');
+  const list = Object.values(_adjustments).filter(a => {
+    if (!q) return true;
+    return String(a.id) === qId || String(a.name || '').toLowerCase().includes(q) || String(a.client || '').toLowerCase().includes(q);
+  }).sort((a, b) => b.id - a.id);
+  const count = document.getElementById('adjpk-count');
+  if (count) count.textContent = list.length + ' job' + (list.length === 1 ? '' : 's');
+  if (!list.length) { el.innerHTML = '<div class="empty">' + (q ? 'No adjusted jobs match your search.' : 'No jobs have been adjusted yet.') + '</div>'; return; }
+  const th = 'style="text-align:left;padding:8px 10px;font-size:11px;text-transform:uppercase;letter-spacing:0.04em;color:var(--text);font-weight:700;"';
+  const thR = 'style="text-align:right;padding:8px 10px;font-size:11px;text-transform:uppercase;letter-spacing:0.04em;color:var(--text);font-weight:700;width:190px;"';
+  el.innerHTML =
+    '<div class="report-scroll-wrap"><table class="ss-table" style="width:100%;border-collapse:collapse;font-size:13px;">' +
+      '<thead><tr style="background:var(--bg2);"><th ' + th + '>Job</th><th ' + thR + '>Adjusted Packets</th></tr></thead><tbody>' +
+      list.map(a => '<tr style="border-bottom:1px solid var(--border);">' +
+        '<td style="padding:8px 10px;"><b>E-' + a.id + '</b> &middot; ' + esc(a.name || '') + (a.client ? ' <span style="color:var(--text2);">&middot; ' + esc(a.client) + '</span>' : '') + '</td>' +
+        '<td style="padding:8px 10px;text-align:right;">' + adjPacketsInputHtml(a) + '</td></tr>').join('') +
+      '</tbody></table></div>';
+}
+
 async function loadWastageAdjData() {
   const [settings, finalized, allocMap, unallocTxs] = await Promise.all([
     api('GET', '/api/wastage-adjustment/settings').catch(() => _wastageAdjSettings),
@@ -23720,10 +23832,10 @@ let auditList = [];
 // cap than the old fixed limit=50 so "All time" actually shows the history
 // instead of just the last few entries.
 let auditFeedState = { type: '', period: 'all', from: '', to: '', limit: 500 };
+// Only what this app records (the server filters the feed the same way): wastage adjustments, user management and
+// Access Register changes. Tracker activity (jobs, inventory, imports...) never appears here.
 const AUDIT_TYPE_OPTS = [
-  ['', 'All Types'], ['job', 'Jobs'], ['inventory', 'Inventory'], ['user', 'Users'],
-  ['operator', 'Operators'], ['group', 'Groups'], ['import', 'Imports'],
-  ['transfer_note', 'Transfer Notes'], ['trash', 'Trash'], ['wastage_adjustment', 'Wastage Adjustment'],
+  ['', 'All Types'], ['wastage_adjustment', 'Wastage Adjustment'], ['user', 'Users'], ['role_permission', 'Access Register'],
 ];
 function auditFeedDateRange() {
   const now = new Date();

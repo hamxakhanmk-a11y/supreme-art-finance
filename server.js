@@ -2423,6 +2423,7 @@ app.get('/api/audit', requireAuth, async (req, res) => {
         AND (${entityIdNum}::int IS NULL OR entity_id = ${entityIdNum})
         AND (${userIdNum}::int   IS NULL OR user_id   = ${userIdNum})
         AND (${typePrefix}::text IS NULL OR action LIKE ${typePrefix})
+        AND (action LIKE 'wastage_adjustment.%' OR action LIKE 'user.%' OR action LIKE 'role_permission.%')
         AND (${fromTs}::timestamptz   IS NULL OR created_at >= ${fromTs}::timestamptz)
         AND (${toEndIso}::timestamptz IS NULL OR created_at <  ${toEndIso}::timestamptz)
       ORDER BY id DESC LIMIT ${cap}
@@ -9272,6 +9273,36 @@ app.delete('/api/wastage-adjustment/adjust/:jobId', requirePermission('wastage_a
       summary: `Wastage adjustment removed from Job E-${jobId}`,
     });
     res.json({ ok: true });
+  } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
+});
+
+// Change how many packets an existing adjustment covers (the "Adjusted Packets" boxes on the job tiles and in the
+// Adjusted Packets report). Only for an adjustment that exists and is not posted; the wastage split percentages and
+// any linked manual consumption are left exactly as they were.
+app.patch('/api/wastage-adjustment/adjust/:jobId/packets', requirePermission('wastage_adjustment'), async (req, res) => {
+  try {
+    await dbReady;
+    const sql = getDb();
+    const jobId = parseInt(req.params.jobId, 10);
+    const packets = Number(req.body && req.body.manual_packets);
+    const sheets = Math.round(Number(req.body && req.body.manual_sheets));
+    if (!Number.isFinite(packets) || packets <= 0) return res.status(400).json({ error: 'manual_packets must be more than 0' });
+    if (!Number.isFinite(sheets) || sheets < 0) return res.status(400).json({ error: 'manual_sheets must be 0 or more' });
+    const existing = (await sql`SELECT id, posted, manual_packets, manual_sheets FROM job_adjustments WHERE job_id = ${jobId}`)[0];
+    if (!existing) return res.status(404).json({ error: 'No adjustment found for this job' });
+    if (existing.posted) return res.status(400).json({ error: 'Cannot edit a posted adjustment' });
+    const row = (await sql`
+      UPDATE job_adjustments SET manual_packets = ${packets}, manual_sheets = ${sheets}
+       WHERE job_id = ${jobId} RETURNING *
+    `)[0];
+    await logAudit(sql, req, {
+      action: 'wastage_adjustment.packets_edit',
+      entityType: 'job',
+      entityId: jobId,
+      summary: `Adjusted packets edited: Job E-${jobId} ${existing.manual_packets} -> ${packets} packets (${sheets.toLocaleString()} sheets)`,
+      metadata: { before_packets: existing.manual_packets, before_sheets: existing.manual_sheets, manual_packets: packets, manual_sheets: sheets },
+    });
+    res.json(row);
   } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
 });
 
