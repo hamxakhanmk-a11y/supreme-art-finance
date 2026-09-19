@@ -15126,9 +15126,18 @@ function adjConsumptionGroups() {
   return [...groups.values()];
 }
 
-function setAdjustSourceMode(mode) {
-  _adjSourceMode = mode;
-  renderAdjustSources();
+// Manual = the typed wastage split (starts from the Wastage Settings defaults) and NO linked sources: it just adjusts
+// the packets on this job. By Job / By Consumption = the Wastage Settings split plus the manual-consumption sources.
+function setAdjustSourceMode(mode, jobId) {
+  _adjSourceMode = mode === 'consumption' ? 'consumption' : (mode === 'job' ? 'job' : 'manual');
+  _adjSplitMode = _adjSourceMode === 'manual' ? 'manual' : 'default';
+  const manualPane = document.getElementById('adj-pane-manual');
+  const sourcesPane = document.getElementById('adj-pane-sources');
+  if (manualPane) manualPane.style.display = _adjSourceMode === 'manual' ? '' : 'none';
+  if (sourcesPane) sourcesPane.style.display = _adjSourceMode === 'manual' ? 'none' : '';
+  renderAdjustSources();   // also paints the three mode buttons
+  const id = jobId || _adjSplitJobId;
+  if (id) adjSplitChanged(id);
 }
 
 // Wastage split module. 'manual' (the default) lets whoever is adjusting
@@ -15139,22 +15148,6 @@ function setAdjustSourceMode(mode) {
 // changing Wastage Settings later never moves an adjustment already made.
 let _adjSplitMode = 'manual';
 let _adjSplitJobId = null;
-function setAdjustSplitMode(mode, jobId) {
-  _adjSplitMode = mode === 'default' ? 'default' : 'manual';
-  const manualEl = document.getElementById('adj-split-manual');
-  const noteEl = document.getElementById('adj-split-default-note');
-  if (manualEl) manualEl.style.display = _adjSplitMode === 'manual' ? '' : 'none';
-  if (noteEl) noteEl.style.display = _adjSplitMode === 'manual' ? 'none' : '';
-  document.querySelectorAll('[data-adj-split]').forEach(button => {
-    const active = button.dataset.adjSplit === _adjSplitMode;
-    button.setAttribute('aria-pressed', String(active));
-    button.style.background = active ? '#dcfce7' : 'transparent';
-    button.style.color = active ? '#166534' : 'var(--text2)';
-    button.style.borderColor = active ? '#22c55e' : 'var(--border)';
-  });
-  const id = jobId || _adjSplitJobId;
-  if (id) adjSplitChanged(id);
-}
 // Which percentages the preview and the save should use right now.
 function adjSplitPcts() {
   if (_adjSplitMode !== 'manual') {
@@ -15251,7 +15244,7 @@ async function openAdjustModal(jobId) {
 
   let matchHtml = '<div style="font-size:12px;color:var(--text2);">Loading matching manual consumption...</div>';
   _adjModalTxMatches = [];
-  _adjSourceMode = 'job';
+  _adjSourceMode = 'manual';
   _adjSelectedSources = new Set();
   try {
     const txs = await api('GET', '/api/wastage-adjustment/unallocated');
@@ -15318,29 +15311,6 @@ function buildAdjustSidePanel(j, s, ps, matchHtml) {
     </div>
     <div class="cv-compare-body">
       <div style="border:1px solid var(--border);border-radius:var(--radius);padding:12px;background:#fff;margin-bottom:12px;">
-        <div style="display:flex;gap:8px;margin-bottom:10px;" role="group" aria-label="Wastage split module">
-          <button type="button" class="btn btn-sm" data-adj-split="manual" onclick="setAdjustSplitMode('manual')">Manual</button>
-          <button type="button" class="btn btn-sm" data-adj-split="default" onclick="setAdjustSplitMode('default')">Wastage Settings</button>
-        </div>
-        <div class="dash-flbl" style="margin-bottom:8px;">Wastage Split</div>
-        <div id="adj-split-default-note" style="font-size:11px;color:var(--text2);display:none;">
-          Uses the defaults from <a href="#" onclick="event.preventDefault();openWastageAdjSettingsModal()">Wastage Settings</a>:
-          Printing ${s.printing_pct}% &middot; Die ${s.die_pct}% &middot; Coating ${s.coating_pct}% &middot; Pasting ${s.pasting_pct}% &middot; Sorting ${s.sorting_pct}%.
-        </div>
-        <div id="adj-split-manual">
-          <div style="font-size:11px;color:var(--text2);margin-bottom:8px;">Split the quantity above across the stages yourself. Starts from the Wastage Settings defaults; must total 100%.</div>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
-            ${[['printing','Printing','printing_pct'],['die','Die Cutting','die_pct'],['coating','Coating','coating_pct'],['pasting','Pasting','pasting_pct'],['sorting','Sorting','sorting_pct']].map(([id, label, key]) => `
-              <div>
-                <label style="font-size:11px;color:var(--text2);">${label} %</label>
-                <input type="number" id="adj-split-${id}" min="0" max="100" step="0.5" value="${s[key]}" class="filter" style="width:100%;" oninput="adjSplitChanged(${j.id})">
-                <div id="adj-split-${id}-qty" style="font-size:10px;color:var(--text2);margin-top:2px;">&nbsp;</div>
-              </div>`).join('')}
-          </div>
-          <div id="adj-split-warn" style="font-size:11px;margin-top:6px;">&nbsp;</div>
-        </div>
-      </div>
-      <div style="border:1px solid var(--border);border-radius:var(--radius);padding:12px;background:#fff;margin-bottom:12px;">
         <div class="dash-flbl" style="margin-bottom:8px;">Manual Packets / Sheets to Adjust</div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
           <div>
@@ -15355,13 +15325,36 @@ function buildAdjustSidePanel(j, s, ps, matchHtml) {
         <div style="font-size:11px;color:var(--text2);margin-top:4px;">Max ${s.max_packets_per_job} packets per job. 1 packet = ${ps} sheets.</div>
       </div>
       <div style="border:1px solid var(--border);border-radius:var(--radius);padding:12px;background:#fff;margin-bottom:12px;">
-        <div style="display:flex;gap:8px;margin-bottom:10px;" role="group" aria-label="Consumption source view">
+        <div style="display:flex;gap:8px;margin-bottom:10px;" role="group" aria-label="Adjustment mode">
+          <button type="button" class="btn btn-sm" data-adj-mode="manual" onclick="setAdjustSourceMode('manual')">Manual</button>
           <button type="button" class="btn btn-sm" data-adj-mode="job" onclick="setAdjustSourceMode('job')">By Job</button>
           <button type="button" class="btn btn-sm" data-adj-mode="consumption" onclick="setAdjustSourceMode('consumption')">By Consumption</button>
         </div>
-        <div class="dash-flbl" style="margin-bottom:8px;">Manual Consumption Sources</div>
-        <div style="font-size:11px;color:var(--text2);margin-bottom:8px;">Select sources for the total quantity entered above. Save Adjustment applies that quantity across the selected sources.</div>
-        <div id="adj-alloc-list" style="max-height:180px;overflow-y:auto;">${matchHtml}</div>
+        <div id="adj-pane-manual">
+          <div class="dash-flbl" style="margin-bottom:8px;">Wastage Split</div>
+        <div id="adj-split-manual">
+          <div style="font-size:11px;color:var(--text2);margin-bottom:8px;">Split the quantity above across the stages yourself. Starts from the Wastage Settings defaults; must total 100%.</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+            ${[['printing','Printing','printing_pct'],['die','Die Cutting','die_pct'],['coating','Coating','coating_pct'],['pasting','Pasting','pasting_pct'],['sorting','Sorting','sorting_pct']].map(([id, label, key]) => `
+              <div>
+                <label style="font-size:11px;color:var(--text2);">${label} %</label>
+                <input type="number" id="adj-split-${id}" min="0" max="100" step="0.5" value="${s[key]}" class="filter" style="width:100%;" oninput="adjSplitChanged(${j.id})">
+                <div id="adj-split-${id}-qty" style="font-size:10px;color:var(--text2);margin-top:2px;">&nbsp;</div>
+              </div>`).join('')}
+          </div>
+          <div id="adj-split-warn" style="font-size:11px;margin-top:6px;">&nbsp;</div>
+        </div>
+          <div style="font-size:11px;color:var(--text2);margin-top:8px;">Manual adjustment only &mdash; nothing is linked to any manual job card.</div>
+        </div>
+        <div id="adj-pane-sources" style="display:none;">
+          <div class="dash-flbl" style="margin-bottom:8px;">Manual Consumption Sources</div>
+          <div id="adj-split-default-note" style="font-size:11px;color:var(--text2);margin-bottom:8px;">
+            The split uses the defaults from <a href="#" onclick="event.preventDefault();openWastageAdjSettingsModal()">Wastage Settings</a>:
+            Printing ${s.printing_pct}% &middot; Die ${s.die_pct}% &middot; Coating ${s.coating_pct}% &middot; Pasting ${s.pasting_pct}% &middot; Sorting ${s.sorting_pct}%.
+          </div>
+          <div style="font-size:11px;color:var(--text2);margin-bottom:8px;">Select sources for the total quantity entered above. Save Adjustment applies that quantity across the selected sources.</div>
+          <div id="adj-alloc-list" style="max-height:180px;overflow-y:auto;">${matchHtml}</div>
+        </div>
       </div>
       <button class="btn btn-primary" style="width:100%;" onclick="submitAdjustment(${j.id})">Save Adjustment</button>
     </div>
@@ -15387,10 +15380,9 @@ function buildAdjustSidePanel(j, s, ps, matchHtml) {
   panel._layoutObserver = new ResizeObserver(fitAdjustCard);
   panel._layoutObserver.observe(overlay);
   fitAdjustCard();
-  // Manual is the default module — paints the toggle, the per-stage
-  // quantities and the 100% check for the quantity already in the form.
-  setAdjustSplitMode('manual', j.id);
-  if (_adjModalTxMatches.length) renderAdjustSources();
+  // Manual is the default mode — paints the toggle, the per-stage quantities and the 100% check
+  // for the quantity already in the form.
+  setAdjustSourceMode('manual', j.id);
 }
 
 // Recomputes the wastage split from the current packets/sheets inputs and
@@ -15483,22 +15475,25 @@ async function submitAdjustment(jobId) {
     return;
   }
 
+  const isManualMode = _adjSourceMode === 'manual';
   const allocations = [];
   let sheetsLeft = manual_sheets;
-  for (const idx of [..._adjSelectedSources].sort((a, b) => a - b)) {
-    const m = _adjModalTxMatches[idx];
-    if (!m || sheetsLeft <= 0) continue;
-    const take = Math.min(m.remaining, sheetsLeft);
-    allocations.push({ transaction_id: m.id, sheets_allocated: take });
-    sheetsLeft -= take;
+  if (!isManualMode) {
+    for (const idx of [..._adjSelectedSources].sort((a, b) => a - b)) {
+      const m = _adjModalTxMatches[idx];
+      if (!m || sheetsLeft <= 0) continue;
+      const take = Math.min(m.remaining, sheetsLeft);
+      allocations.push({ transaction_id: m.id, sheets_allocated: take });
+      sheetsLeft -= take;
+    }
   }
 
-  if (!allocations.length) {
+  if (!isManualMode && !allocations.length) {
     notify('Select at least one manual consumption source.');
     return;
   }
 
-  if (sheetsLeft > 0) {
+  if (!isManualMode && sheetsLeft > 0) {
     notify('Selected sources do not have enough consumption. Select more sources or reduce the quantity.');
     return;
   }
@@ -15508,7 +15503,7 @@ async function submitAdjustment(jobId) {
     : 'Split from Wastage Settings defaults.';
   const ok = await confirmDialog({
     title: 'Confirm Adjustment',
-    message: `Adjust Job E-${jobId} with ${packets} manual packets (${manual_sheets} sheets)?\n${splitLine}\n${allocations.length} manual consumption source(s) will be linked.`,
+    message: `Adjust Job E-${jobId} with ${packets} manual packets (${manual_sheets} sheets)?\n${splitLine}\n${isManualMode ? 'Manual adjustment \u2014 no manual consumption is linked.' : allocations.length + ' manual consumption source(s) will be linked.'}`,
   });
   if (!ok) return;
   try {
