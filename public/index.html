@@ -5066,6 +5066,9 @@ function setMode(m) {
   // 'station' / 'inventory'), so nothing reaches them. Inventory DATA still
   // loads at boot: the Jobs tab reads it for paper and stock details.
   if (['stickers', 'forms', 'station', 'client-view', 'inventory'].includes(m)) m = 'jobs';
+  // Walking out of Reports clears the Sale Report's per-column filters —
+  // see srResetColFilters().
+  if (mode === 'reports' && m !== 'reports') srResetColFilters();
   mode = m;
   document.querySelectorAll('.mode-btn').forEach(b => b.classList.toggle('active', b.dataset.mode === m));
   requestAnimationFrame(() => syncFlowingTabIndicator('mode-switch'));
@@ -12462,28 +12465,22 @@ function printJobsReport() {
 // bulk-select/created-mode toggle. Gated by delivery_write, same as
 // Company Settings and the Product Rate tab — this is the one report that
 // shows pricing.
-const saleReportState = loadPersistedFilters('sale-report', { client: '', dateRange: '', dfrom: '', dto: '', q: '', type: '', sortBy: 'id', sortDir: 'asc', poSearch: '', challanSearch: '', milOnly: false, colFilters: { paper: [], machine: [], coatings: [], rate: [] }, colFiltersSetAt: {} });
-// A saved object from an older version of this app might be missing
-// colFilters entirely (loadPersistedFilters merges top-level keys only) —
-// backfill it so every column filter function can assume it exists.
-if (!saleReportState.colFilters) saleReportState.colFilters = { paper: [], machine: [], coatings: [], rate: [] };
-for (const k of ['paper', 'machine', 'coatings', 'rate']) if (!Array.isArray(saleReportState.colFilters[k])) saleReportState.colFilters[k] = [];
-if (!saleReportState.colFiltersSetAt || typeof saleReportState.colFiltersSetAt !== 'object') saleReportState.colFiltersSetAt = {};
-// Hamza asked column filters to "reset after some time" so a forgotten
-// filter doesn't silently keep hiding rows — 30 minutes of a column
-// filter being active auto-clears it on the next render.
-const SR_COL_FILTER_TTL_MS = 30 * 60 * 1000;
-function srExpireColFilters() {
-  const now = Date.now();
-  let changed = false;
-  for (const k of Object.keys(saleReportState.colFiltersSetAt)) {
-    if (now - saleReportState.colFiltersSetAt[k] > SR_COL_FILTER_TTL_MS) {
-      saleReportState.colFilters[k] = [];
-      delete saleReportState.colFiltersSetAt[k];
-      changed = true;
-    }
-  }
-  if (changed) _persistSr();
+const saleReportState = loadPersistedFilters('sale-report', { client: '', dateRange: '', dfrom: '', dto: '', q: '', type: '', sortBy: 'id', sortDir: 'asc', poSearch: '', challanSearch: '', milOnly: false, colFilters: { paper: [], machine: [], coatings: [], rate: [] } });
+// Column filters always start empty, whatever an older saved state holds —
+// they're session-scoped by design (see srResetColFilters), so a reload is
+// as much a fresh start as walking out of the report and back in.
+saleReportState.colFilters = { paper: [], machine: [], coatings: [], rate: [] };
+delete saleReportState.colFiltersSetAt; // from the earlier TTL approach, replaced by the reset-on-exit above
+// Column filters are deliberately NOT persisted and do not survive leaving
+// the report — Hamza wants a clean slate every time he walks back in, so a
+// filter he set an hour ago can't silently hide rows he's looking for. The
+// toolbar filters above (search, date, company…) still persist as before;
+// only these per-column pickers reset. Called from exitReportsGroup() and
+// from setMode() when leaving the Reports tab.
+function srResetColFilters() {
+  const had = Object.values(saleReportState.colFilters).some(v => v && v.length);
+  saleReportState.colFilters = { paper: [], machine: [], coatings: [], rate: [] };
+  if (had) _persistSr();
 }
 
 function openSaleReportPage() {
@@ -12683,13 +12680,19 @@ function buildSaleReportRows() {
     const rateLabel = rate !== null ? fmtRate(rate) : '';
     const taxPct = (j.tax_pct !== null && j.tax_pct !== undefined && j.tax_pct !== '') ? Number(j.tax_pct) : 18;
     // Excel-style column filters (Paper/Machine/Coatings/Rate) — an empty
-    // array for a column means "no filter, show everything", matching the
-    // (Select All) checkbox state in saleReportColFilterModal().
+    // array for a column means "no filter, show everything". Coatings is
+    // the odd one out: a job carries SEVERAL coatings, so the picker lists
+    // them individually (UV, Lamination, Emboss…) and a job matches when it
+    // has ANY of the picked ones, rather than matching the whole joined
+    // "Spot UV, Lacquer, Emboss" string as one option.
     const cf = saleReportState.colFilters;
-    if (cf.paper.length    && !cf.paper.includes(paper))       continue;
+    if (cf.paper.length    && !cf.paper.includes(paper))        continue;
     if (cf.machine.length  && !cf.machine.includes(machineVal)) continue;
-    if (cf.coatings.length && !cf.coatings.includes(coatingsVal)) continue;
-    if (cf.rate.length     && !cf.rate.includes(rateLabel))    continue;
+    if (cf.rate.length     && !cf.rate.includes(rateLabel))     continue;
+    if (cf.coatings.length) {
+      const own = splitCoatings(j.coatings);
+      if (!own.some(c => cf.coatings.includes(c))) continue;
+    }
     const cs = companySettingsFor(j.client);
     const cartonsPackets = cartonsPacketsFor(j);
     deliveriesList.forEach((d, idx) => {
@@ -12754,10 +12757,23 @@ function buildSaleReportRows() {
 // whatever the other filters currently narrow things to — so a column's
 // own picker never loses an option just because another filter is active
 // (a simpler, non-cascading version of Excel's autofilter).
+// A job's coatings, one per entry — `j.coatings` is an array, but an entry
+// can itself be a comma-joined string, so split those too. This is what
+// makes the Coatings filter list "UV", "Lamination", "Emboss" separately
+// instead of every combination a job happens to carry.
+function splitCoatings(coatings) {
+  if (!Array.isArray(coatings)) return [];
+  return [...new Set(coatings
+    .flatMap(c => String(c == null ? '' : c).split(','))
+    .map(c => c.trim())
+    .filter(Boolean))];
+}
 function saleReportColumnOptions(field) {
   const set = new Set();
   for (const j of jobs) {
+    if (j.is_shade_card) continue; // Sale Report excludes these, so its pickers must too.
     if (!Array.isArray(j.deliveries) || !j.deliveries.length) continue;
+    if (field === 'coatings') { splitCoatings(j.coatings).forEach(c => set.add(c)); continue; }
     let val = '';
     if (field === 'paper') {
       const invItem = j.inventory_item_id ? inventory.find(i => i.id === j.inventory_item_id) : null;
@@ -12767,8 +12783,6 @@ function saleReportColumnOptions(field) {
         : (paperTypesArr.length ? paperTypesArr.join(', ') : (j.paper || ''));
     } else if (field === 'machine') {
       val = j.machine || '';
-    } else if (field === 'coatings') {
-      val = Array.isArray(j.coatings) ? j.coatings.join(', ') : '';
     } else if (field === 'rate') {
       const r = effectiveRate(j);
       val = r ? fmtRate(r.value) : '';
@@ -12778,12 +12792,12 @@ function saleReportColumnOptions(field) {
   return [...set].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
 }
 const SALE_REPORT_COL_LABELS = { paper: 'Paper', machine: 'Machine', coatings: 'Coatings', rate: 'Rate / Unit Carton' };
-// Small Excel-style filter triangle next to a header's text — green/bold
-// when that column has an active filter, grey otherwise, same "is
-// something filtered" signal Excel's own autofilter icon gives.
+// Small Excel-style filter triangle next to a header's text — always
+// green so the column reads as filterable at a glance, and bolder/darker
+// while a filter is actually on.
 function saleReportColHeaderHtml(field, label) {
   const active = (saleReportState.colFilters[field] || []).length > 0;
-  return `${esc(label)} <button type="button" onclick="event.stopPropagation(); saleReportColFilterModal('${field}')" title="Filter ${esc(label)}" style="background:none;border:none;cursor:pointer;padding:0 0 0 2px;font-size:11px;line-height:1;vertical-align:middle;color:${active ? '#166534' : 'var(--text2)'};font-weight:${active ? '900' : '400'};">&#9660;</button>`;
+  return `${esc(label)} <button type="button" onclick="event.stopPropagation(); saleReportColFilterModal('${field}')" title="Filter ${esc(label)}" style="background:none;border:none;cursor:pointer;padding:0 0 0 2px;font-size:${active ? '13px' : '11px'};line-height:1;vertical-align:middle;color:${active ? '#166534' : '#22c55e'};font-weight:${active ? '900' : '700'};">&#9660;</button>`;
 }
 // Excel-style checkbox row — green background while checked, same "this
 // one's selected" signal as a spreadsheet's own filter picker.
@@ -12803,9 +12817,9 @@ function saleReportColFilterModal(field) {
       <input type="text" id="srcf-search" placeholder="Search ${esc(label)}..." oninput="srColFilterSearch(this.value)" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;box-sizing:border-box;margin-bottom:8px;font-size:13px;">
       <div style="max-height:50vh;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:8px;">
         <label style="display:flex;align-items:center;gap:8px;padding:4px 0 6px;font-weight:700;border-bottom:1px solid var(--border);margin-bottom:4px;">
-          <input type="checkbox" id="srcf-all" ${selected.length===0?'checked':''} onchange="srColFilterToggleAll(this.checked)"> (Select All)
+          <input type="checkbox" id="srcf-all" ${options.length && selected.length === options.length ? 'checked' : ''} onchange="srColFilterToggleAll(this.checked)"> (Select All)
         </label>
-        <div id="srcf-list">${options.map(o => _srcfRowHtml(o, selected.length===0 || selected.includes(o))).join('')}</div>
+        <div id="srcf-list">${options.map(o => _srcfRowHtml(o, selected.includes(o))).join('')}</div>
         <div id="srcf-noresults" style="display:none;color:var(--text3);font-style:italic;padding:8px 0;">No matches.</div>
       </div>` : `<div style="color:var(--text3);font-style:italic;padding:12px 0;">No values to filter yet.</div>`}
     <div class="modal-actions">
@@ -12845,18 +12859,13 @@ function srColFilterOptChanged(cb) {
 function srColFilterApply(field) {
   const all = [...document.querySelectorAll('.srcf-opt')];
   const checked = all.filter(el => el.checked).map(el => el.value);
-  // Everything checked == no filter (matches how the modal opens with
-  // everything checked when colFilters[field] is empty).
-  const isFiltered = checked.length !== all.length;
-  saleReportState.colFilters[field] = isFiltered ? checked : [];
-  if (isFiltered) saleReportState.colFiltersSetAt[field] = Date.now();
-  else delete saleReportState.colFiltersSetAt[field];
-  _persistSr();
+  // The boxes mean literally "show me these". Picking none — or picking
+  // every one, which comes to the same thing — is no filter at all.
+  saleReportState.colFilters[field] = (checked.length === all.length) ? [] : checked;
   closeModal();
   renderSaleReport();
 }
 function renderSaleReport() {
-  srExpireColFilters();
   const rows = buildSaleReportRows();
   const el = document.getElementById('sr-content');
   if (!el) return;
@@ -14947,6 +14956,7 @@ function openReportsGroup(groupId) {
 
 // Return to the 3-card landing — hides every group.
 function exitReportsGroup() {
+  srResetColFilters();
   const landing = document.getElementById('reports-landing');
   if (landing) landing.style.display = 'block';
   document.querySelectorAll('#reports-mode .reports-group').forEach(g => {
