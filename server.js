@@ -9198,12 +9198,23 @@ app.post('/api/wastage-adjustment/adjust/:jobId', requirePermission('wastage_adj
         `;
       }
     }
+    // split_mode is client-reported only ('manual' when whoever adjusted
+    // typed the split themselves rather than inheriting Wastage Settings).
+    // The percentages are authoritative either way — they're stored on the
+    // row above — but recording which module produced them makes the audit
+    // trail answer "did someone override the defaults here?" without having
+    // to compare five numbers against whatever the settings happen to be now.
+    const splitMode = b.split_mode === 'manual' ? 'manual' : 'default';
+    const splitText = `Printing ${b.printing_pct}% / Die ${b.die_pct}% / Coating ${b.coating_pct}% / Pasting ${b.pasting_pct}% / Sorting ${b.sorting_pct}%`;
     await logAudit(sql, req, {
       action: 'wastage_adjustment.adjust',
       entityType: 'job',
       entityId: jobId,
-      summary: `Wastage adjustment: Job E-${jobId} with ${b.manual_packets} manual packets`,
-      metadata: { manual_packets: b.manual_packets, printing_pct: b.printing_pct, die_pct: b.die_pct, coating_pct: b.coating_pct, pasting_pct: b.pasting_pct, sorting_pct: b.sorting_pct },
+      summary: `Wastage adjustment: Job E-${jobId} — ${b.manual_packets} packets (${(b.manual_sheets || 0).toLocaleString()} sheets) adjusted, ${splitMode} split ${splitText}`,
+      metadata: {
+        manual_packets: b.manual_packets, manual_sheets: b.manual_sheets || 0, split_mode: splitMode,
+        printing_pct: b.printing_pct, die_pct: b.die_pct, coating_pct: b.coating_pct, pasting_pct: b.pasting_pct, sorting_pct: b.sorting_pct,
+      },
     });
     res.json(row);
   } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }

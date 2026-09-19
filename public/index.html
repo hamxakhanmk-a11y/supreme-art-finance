@@ -15131,6 +15131,71 @@ function setAdjustSourceMode(mode) {
   renderAdjustSources();
 }
 
+// Wastage split module. 'manual' (the default) lets whoever is adjusting
+// type the split for THIS job instead of inheriting the global Wastage
+// Settings percentages; 'default' is the old behaviour. Either way the
+// percentages actually used are saved onto the adjustment row itself, so
+// wastageAdjOverlay() replays a manual split exactly as it was entered —
+// changing Wastage Settings later never moves an adjustment already made.
+let _adjSplitMode = 'manual';
+let _adjSplitJobId = null;
+function setAdjustSplitMode(mode, jobId) {
+  _adjSplitMode = mode === 'default' ? 'default' : 'manual';
+  const manualEl = document.getElementById('adj-split-manual');
+  const noteEl = document.getElementById('adj-split-default-note');
+  if (manualEl) manualEl.style.display = _adjSplitMode === 'manual' ? '' : 'none';
+  if (noteEl) noteEl.style.display = _adjSplitMode === 'manual' ? 'none' : '';
+  document.querySelectorAll('[data-adj-split]').forEach(button => {
+    const active = button.dataset.adjSplit === _adjSplitMode;
+    button.setAttribute('aria-pressed', String(active));
+    button.style.background = active ? '#dcfce7' : 'transparent';
+    button.style.color = active ? '#166534' : 'var(--text2)';
+    button.style.borderColor = active ? '#22c55e' : 'var(--border)';
+  });
+  const id = jobId || _adjSplitJobId;
+  if (id) adjSplitChanged(id);
+}
+// Which percentages the preview and the save should use right now.
+function adjSplitPcts() {
+  if (_adjSplitMode !== 'manual') {
+    const s = _wastageAdjSettings;
+    return { printing_pct: s.printing_pct, die_pct: s.die_pct, coating_pct: s.coating_pct, pasting_pct: s.pasting_pct, sorting_pct: s.sorting_pct };
+  }
+  const read = (id) => {
+    const el = document.getElementById('adj-split-' + id);
+    return el ? (parseFloat(el.value) || 0) : 0;
+  };
+  return { printing_pct: read('printing'), die_pct: read('die'), coating_pct: read('coating'), pasting_pct: read('pasting'), sorting_pct: read('sorting') };
+}
+function adjSplitTotal(p) { return p.printing_pct + p.die_pct + p.coating_pct + p.pasting_pct + p.sorting_pct; }
+// Live feedback under each manual field: what that percentage actually
+// works out to for THIS job, in the unit that row is measured in (sheets
+// for printing/coating/die, cartons for sorting/pasting).
+function adjSplitChanged(jobId) {
+  _adjSplitJobId = jobId;
+  const j = jobs.find(x => x.id === jobId);
+  const sheetsEl = document.getElementById('adj-sheets');
+  if (!j || !sheetsEl) return;
+  const pcts = adjSplitPcts();
+  const overlay = computeWastageAdjSplit(j, parseFloat(sheetsEl.value) || 0, pcts, parseFloat(j.ups) || 0);
+  const PAIRS = [['printing','printing_pct'],['die','die_pct'],['coating','coating_pct'],['pasting','pasting_pct'],['sorting','sorting_pct']];
+  for (const [id, pctKey] of PAIRS) {
+    const cell = document.getElementById('adj-split-' + id + '-qty');
+    if (!cell) continue;
+    const row = WASTAGE_ADJ_ROW_MAP[pctKey];
+    const val = row ? overlay[row.key] : 0;
+    cell.innerHTML = val > 0 ? `= ${val.toLocaleString()} ${row.unit}` : '&nbsp;';
+  }
+  const warn = document.getElementById('adj-split-warn');
+  if (warn) {
+    const total = Math.round(adjSplitTotal(pcts));
+    const ok = total === 100;
+    warn.style.color = ok ? 'var(--text2)' : '#dc2626';
+    warn.textContent = ok ? 'Total 100%' : `Total ${total}% — must be 100%.`;
+  }
+  updateAdjustPreview(jobId);
+}
+
 function toggleAdjustSource(indices, checked) {
   for (const i of indices) {
     if (checked) _adjSelectedSources.add(i);
@@ -15252,9 +15317,28 @@ function buildAdjustSidePanel(j, s, ps, matchHtml) {
       <button type="button" class="cv-compare-close" title="Close" aria-label="Close">&times;</button>
     </div>
     <div class="cv-compare-body">
-      <div style="font-size:12px;color:var(--text2);margin-bottom:10px;">
-        Wastage split uses the defaults from <a href="#" onclick="event.preventDefault();openWastageAdjSettingsModal()">Wastage Settings</a>:
-        Printing ${s.printing_pct}% &middot; Die ${s.die_pct}% &middot; Coating ${s.coating_pct}% &middot; Pasting ${s.pasting_pct}% &middot; Sorting ${s.sorting_pct}%.
+      <div style="border:1px solid var(--border);border-radius:var(--radius);padding:12px;background:#fff;margin-bottom:12px;">
+        <div style="display:flex;gap:8px;margin-bottom:10px;" role="group" aria-label="Wastage split module">
+          <button type="button" class="btn btn-sm" data-adj-split="manual" onclick="setAdjustSplitMode('manual')">Manual</button>
+          <button type="button" class="btn btn-sm" data-adj-split="default" onclick="setAdjustSplitMode('default')">Wastage Settings</button>
+        </div>
+        <div class="dash-flbl" style="margin-bottom:8px;">Wastage Split</div>
+        <div id="adj-split-default-note" style="font-size:11px;color:var(--text2);display:none;">
+          Uses the defaults from <a href="#" onclick="event.preventDefault();openWastageAdjSettingsModal()">Wastage Settings</a>:
+          Printing ${s.printing_pct}% &middot; Die ${s.die_pct}% &middot; Coating ${s.coating_pct}% &middot; Pasting ${s.pasting_pct}% &middot; Sorting ${s.sorting_pct}%.
+        </div>
+        <div id="adj-split-manual">
+          <div style="font-size:11px;color:var(--text2);margin-bottom:8px;">Split the quantity above across the stages yourself. Starts from the Wastage Settings defaults; must total 100%.</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+            ${[['printing','Printing','printing_pct'],['die','Die Cutting','die_pct'],['coating','Coating','coating_pct'],['pasting','Pasting','pasting_pct'],['sorting','Sorting','sorting_pct']].map(([id, label, key]) => `
+              <div>
+                <label style="font-size:11px;color:var(--text2);">${label} %</label>
+                <input type="number" id="adj-split-${id}" min="0" max="100" step="0.5" value="${s[key]}" class="filter" style="width:100%;" oninput="adjSplitChanged(${j.id})">
+                <div id="adj-split-${id}-qty" style="font-size:10px;color:var(--text2);margin-top:2px;">&nbsp;</div>
+              </div>`).join('')}
+          </div>
+          <div id="adj-split-warn" style="font-size:11px;margin-top:6px;">&nbsp;</div>
+        </div>
       </div>
       <div style="border:1px solid var(--border);border-radius:var(--radius);padding:12px;background:#fff;margin-bottom:12px;">
         <div class="dash-flbl" style="margin-bottom:8px;">Manual Packets / Sheets to Adjust</div>
@@ -15303,6 +15387,9 @@ function buildAdjustSidePanel(j, s, ps, matchHtml) {
   panel._layoutObserver = new ResizeObserver(fitAdjustCard);
   panel._layoutObserver.observe(overlay);
   fitAdjustCard();
+  // Manual is the default module — paints the toggle, the per-stage
+  // quantities and the 100% check for the quantity already in the form.
+  setAdjustSplitMode('manual', j.id);
   if (_adjModalTxMatches.length) renderAdjustSources();
 }
 
@@ -15317,7 +15404,7 @@ function updateAdjustPreview(jobId) {
   const sheets = parseFloat(sheetsEl.value) || 0;
   const packets = packetsEl ? (parseFloat(packetsEl.value) || 0) : 0;
   const ups = parseFloat(j.ups) || 0;
-  const overlay = computeWastageAdjSplit(j, sheets, _wastageAdjSettings, ups);
+  const overlay = computeWastageAdjSplit(j, sheets, adjSplitPcts(), ups);
   for (const row of Object.values(WASTAGE_ADJ_ROW_MAP)) {
     const el = document.getElementById('wp-' + row.key);
     if (!el) continue;
@@ -15360,7 +15447,7 @@ function adjPacketsChanged(jobId) {
   const ps = packetSize(invIt ? invIt.paper_type : j.paper || '') * jobCutPieces(j);
   const packets = parseFloat(packetsEl.value) || 0;
   sheetsEl.value = Math.round(packets * ps);
-  updateAdjustPreview(jobId);
+  adjSplitChanged(jobId);
 }
 
 function adjSheetsChanged(jobId) {
@@ -15375,7 +15462,7 @@ function adjSheetsChanged(jobId) {
   const ps = packetSize(invIt ? invIt.paper_type : j.paper || '') * jobCutPieces(j);
   const sheets = parseFloat(sheetsEl.value) || 0;
   packetsEl.value = ps ? +(sheets / ps).toFixed(2) : 0;
-  updateAdjustPreview(jobId);
+  adjSplitChanged(jobId);
 }
 
 async function submitAdjustment(jobId) {
@@ -15384,8 +15471,12 @@ async function submitAdjustment(jobId) {
   const manual_sheets = Math.round(parseFloat(document.getElementById('adj-sheets').value) || 0);
   const notes = '';
   const s = _wastageAdjSettings;
-  const printing_pct = s.printing_pct, die_pct = s.die_pct, coating_pct = s.coating_pct,
-        pasting_pct = s.pasting_pct, sorting_pct = s.sorting_pct;
+  const pcts = adjSplitPcts();
+  const { printing_pct, die_pct, coating_pct, pasting_pct, sorting_pct } = pcts;
+  if (Math.round(adjSplitTotal(pcts)) !== 100) {
+    notify(`Wastage split totals ${Math.round(adjSplitTotal(pcts))}% — it must be 100%.`);
+    return;
+  }
   if (packets <= 0 || manual_sheets <= 0) { notify('Enter a valid number of packets/sheets.'); return; }
   if (packets > s.max_packets_per_job) {
     notify(`Max ${s.max_packets_per_job} packets per job.`);
@@ -15412,14 +15503,17 @@ async function submitAdjustment(jobId) {
     return;
   }
 
+  const splitLine = _adjSplitMode === 'manual'
+    ? `Manual split: Printing ${printing_pct}% · Die ${die_pct}% · Coating ${coating_pct}% · Pasting ${pasting_pct}% · Sorting ${sorting_pct}%.`
+    : 'Split from Wastage Settings defaults.';
   const ok = await confirmDialog({
     title: 'Confirm Adjustment',
-    message: `Adjust Job E-${jobId} with ${packets} manual packets (${manual_sheets} sheets)?\n${allocations.length} manual consumption source(s) will be linked.`,
+    message: `Adjust Job E-${jobId} with ${packets} manual packets (${manual_sheets} sheets)?\n${splitLine}\n${allocations.length} manual consumption source(s) will be linked.`,
   });
   if (!ok) return;
   try {
     await api('POST', `/api/wastage-adjustment/adjust/${jobId}`, {
-      manual_packets: packets, manual_sheets,
+      manual_packets: packets, manual_sheets, split_mode: _adjSplitMode,
       printing_pct, die_pct, coating_pct, pasting_pct, sorting_pct, notes, allocations,
     });
     closeModal();
