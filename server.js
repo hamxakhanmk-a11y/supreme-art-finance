@@ -285,7 +285,9 @@ function getDb() {
 // (ROLE_PERMS[key] is always a truthy {} once the cache has loaded once,
 // even with zero rows — see refreshRolePermissions), which would lock
 // Sale Report and the Product Rate tab down to Super Admin only.
-const SCHEMA_VERSION = 'v2026-09-18-finance-cartons-packets';
+// Bumped again for the three-role setup (Super Admin / Admin / Finance): re-seeds finance.role_permissions once so
+// Admin and Finance have full access everywhere except the Users tab (see the finance_roles_simplified_v1 marker).
+const SCHEMA_VERSION = 'v2026-09-19-finance-three-roles';
 
 // This app shares its Neon database with the Job Tracker app (it started as
 // a copy of it). Both run initDb() at boot, so they must NOT share the one
@@ -315,7 +317,8 @@ const SCHEMA_VERSION_KEY = 'schema_version_finance';
 // Finance's Access Register covers exactly these roles (Super Admin always
 // has everything and isn't editable). Declared before initDb runs, since
 // initDb seeds finance.role_permissions for them.
-const FINANCE_PERMISSION_ROLES = ['admin', 'ceo', 'finance', 'procurement'];
+// Three roles: Super Admin (always everything, not editable), Admin and Finance.
+const FINANCE_PERMISSION_ROLES = ['admin', 'finance'];
 
 const ROLE_PERMISSION_DEFAULTS = {
   job_write:            { label: 'Create, edit/save, move, duplicate, link/unlink, block/unblock a job, or manage a MIL group', levels: { admin: 'yes', production_manager: 'yes' } },
@@ -435,6 +438,18 @@ const ROLE_PERMISSION_DEFAULTS = {
   // register rows, so nothing changes out of the box; Hamza can now
   // adjust per role without a redeploy.
 };
+// Admin and Finance get full access to everything for now, EXCEPT the Users tab (Team, Activity Log, Operators,
+// Access Register, invites, roles, sessions), which is Super Admin only. The per-key levels written out above are the
+// old five-role defaults; this pass replaces them so a new key added later still lands on "everyone but Users".
+function financeAccessLevel(key) {
+  if (/^user_/.test(key) || key === 'operator_admin') return null;               // Users tab: Super Admin only
+  if (/_tab_access$/.test(key) || /^rpt_/.test(key) || key === 'products_btn_revenue') return 'view';
+  return 'yes';
+}
+for (const [key, def] of Object.entries(ROLE_PERMISSION_DEFAULTS)) {
+  const level = financeAccessLevel(key);
+  def.levels = level ? { admin: level, finance: level } : {};
+}
 // In-memory cache, refreshed on write. Read on every request, so it must
 // never be empty/stale relative to the DB for longer than one write's
 // round trip — refreshRolePermissions() is awaited right after every
@@ -1533,6 +1548,26 @@ async function initDb() {
         `;
       }
     }
+    // One-time: collapse the register to the three roles. Drops the CEO / Procurement (and any other) columns and sets
+    // Admin and Finance to the defaults above (full access, Users tab excluded). Marker-guarded so a later hand edit in
+    // the Access Register is never overwritten on a replay. One statement each, not one per key, so a cold start stays quick.
+    const rolesSimplified = await sql`SELECT 1 FROM schema_meta WHERE key = 'finance_roles_simplified_v1'`;
+    if (!rolesSimplified.length) {
+      await sql`DELETE FROM finance.role_permissions WHERE role <> ALL(${FINANCE_PERMISSION_ROLES})`;
+      const pk = [], pr = [], pl = [], dropKeys = [];
+      for (const [key, def] of Object.entries(ROLE_PERMISSION_DEFAULTS)) {
+        const lv = Object.keys(def.levels).length ? def.levels : null;
+        if (!lv) { dropKeys.push(key); continue; }
+        for (const role of FINANCE_PERMISSION_ROLES) { if (lv[role]) { pk.push(key); pr.push(role); pl.push(lv[role]); } }
+      }
+      await sql`
+        INSERT INTO finance.role_permissions (permission_key, role, level, updated_by, updated_at)
+        SELECT k, r, l, 'three-role setup', NOW() FROM unnest(${pk}::text[], ${pr}::text[], ${pl}::text[]) AS t(k, r, l)
+        ON CONFLICT (permission_key, role) DO UPDATE SET level = EXCLUDED.level, updated_by = EXCLUDED.updated_by, updated_at = NOW()
+      `;
+      if (dropKeys.length) await sql`DELETE FROM finance.role_permissions WHERE permission_key = ANY(${dropKeys}) AND role = ANY(${FINANCE_PERMISSION_ROLES})`;
+      await sql`INSERT INTO schema_meta (key, value) VALUES ('finance_roles_simplified_v1', NOW()::TEXT) ON CONFLICT (key) DO NOTHING`;
+    }
     // Seed the owner so the list isn't empty on first deploy (nobody could
     // sign in to add anyone). ON CONFLICT makes it a no-op on every replay.
     if (BOOTSTRAP_SUPER_ADMIN) {
@@ -1987,7 +2022,7 @@ app.post('/api/auth/google', async (req, res) => {
     // allow). The owner is seeded by initDb; everyone else must be added
     // from the Users tab — including Admin and CEO, which are ordinary
     // invite-able finance.users roles now, not tracker roles leaking in.
-    if (!user || !userHasRole(user, 'admin', 'ceo', 'finance', 'procurement', 'super_admin')) {
+    if (!user || !userHasRole(user, 'admin', 'finance', 'super_admin')) {
       return res.status(403).json({ error: 'This account does not have access to Supreme Art Finance. Ask a Super Admin to add you.' });
     }
     if (user.blocked_at) {
@@ -2123,7 +2158,7 @@ function parseRolesInput(body, actingUser) {
   // also always carries 'admin' — every Super Admin is implicitly an
   // Admin too, same as in the Job Tracker — enforced below, not by the DB
   // CHECK (which now allows a standalone Admin with no Super Admin).
-  const INVITE_ROLES = ['admin', 'ceo', 'finance', 'procurement'];
+  const INVITE_ROLES = ['admin', 'finance'];
   let roles = normalizeUserRoles(Array.isArray(body.roles) && body.roles.length ? body.roles : body.role)
     .filter(r => r === 'super_admin' || INVITE_ROLES.includes(r));
   if (roles.includes('super_admin') && !userHasRole(actingUser, 'super_admin')) {
@@ -2136,7 +2171,7 @@ function parseRolesInput(body, actingUser) {
     // straight concat here would double it when both boxes are checked.
     roles = ['super_admin', 'admin', ...roles.filter(r => r !== 'super_admin' && r !== 'admin')];
   }
-  const ROLE_PRIORITY_FINANCE = ['super_admin', 'admin', 'finance', 'ceo', 'procurement'];
+  const ROLE_PRIORITY_FINANCE = ['super_admin', 'admin', 'finance'];
   const primary = ROLE_PRIORITY_FINANCE.find(r => roles.includes(r)) || 'finance';
   return { roles, primary };
 }
@@ -2282,8 +2317,8 @@ app.delete('/api/users/:id', requirePermission('user_admin'), async (req, res) =
 // rejected in real time on their very next request.
 
 app.get('/api/users/:id/sessions', requireAuth, async (req, res) => {
-  if (!userHasRole(req.user, 'admin', 'ceo')) {
-    return res.status(403).json({ error: 'Admin or CEO only' });
+  if (!userHasRole(req.user, 'super_admin')) {
+    return res.status(403).json({ error: 'Super Admin only' });
   }
   try {
     await dbReady;
@@ -2304,7 +2339,7 @@ app.get('/api/users/:id/sessions', requireAuth, async (req, res) => {
   }
 });
 
-app.post('/api/users/:id/sessions/:sid/revoke', requireAdmin, async (req, res) => {
+app.post('/api/users/:id/sessions/:sid/revoke', requireSuperAdmin, async (req, res) => {
   try {
     await dbReady;
     const sql = getDb();

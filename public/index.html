@@ -4601,7 +4601,10 @@ function renderUserChip() {
   // Users tab — open to whoever can see the Authorized Users list
   // (user_view) or manage Floor Operators (operator_admin — other
   // sections tagged .pm-hide), and finance (sees the block-msg placeholder).
-  lockTab('mode-users-btn',     fin || hasPerm('user_view', 'view') || hasPerm('operator_admin'));
+  // Users tab: Super Admin only. Admin and Finance don't see it at all.
+  lockTab('mode-users-btn',     isSuperAdmin());
+  const usersTabBtn = document.getElementById('mode-users-btn');
+  if (usersTabBtn) usersTabBtn.style.display = isSuperAdmin() ? '' : 'none';
   // Trash card — gated by trash_view (default admin/ceo, was previously
   // just "anyone who isn't an operator," which let PM/Store Manager/
   // Finance see it too even though the server never actually allowed
@@ -4832,6 +4835,12 @@ function syncReportsFlowIndicators() {
 
 // Mode (top-level page) switching — toggles between Jobs / Inventory / Users
 // and swaps the topbar's primary action button accordingly.
+// Show or hide one tab's panel. A panel this app no longer ships (Products, Inventory, Stickers...) is simply skipped
+// instead of throwing, which used to stop setMode before it showed Reports or Users.
+function setPaneDisplay(id, on) {
+  const el = document.getElementById(id);
+  if (el) el.style.display = on ? 'block' : 'none';
+}
 function setMode(m) {
   // Role gates — collapse any disallowed tab to the user's home tab so
   // disallowed views can't be reached even via a stray setMode() call.
@@ -4845,7 +4854,7 @@ function setMode(m) {
   // Authorized Users + Recent Activity sections are tagged .pm-hide
   // so PM lands on a Users tab that's effectively just the Floor
   // Operators roster). Everyone else is bounced to Jobs.
-  if (m === 'users' && !isAdmin() && !hasRole('ceo') && !isProductionManager() && !isFinance()) m = 'jobs';
+  if (m === 'users' && !isSuperAdmin()) m = 'jobs';
   // Client View tab — admin preview only. Store manager / operator get
   // bounced to Jobs since they don't have the role gate for it. Finance
   // may enter to see the role-block-msg placeholder.
@@ -4864,14 +4873,14 @@ function setMode(m) {
   mode = m;
   document.querySelectorAll('.mode-btn').forEach(b => b.classList.toggle('active', b.dataset.mode === m));
   requestAnimationFrame(() => syncFlowingTabIndicator('mode-switch'));
-  document.getElementById('jobs-mode').style.display      = m === 'jobs' ? 'block' : 'none';
-  document.getElementById('products-mode').style.display  = m === 'products' ? 'block' : 'none';
-  document.getElementById('inventory-mode').style.display = m === 'inventory' ? 'block' : 'none';
-  document.getElementById('reports-mode').style.display   = m === 'reports' ? 'block' : 'none';
-  document.getElementById('stickers-mode').style.display  = m === 'stickers' ? 'block' : 'none';
-  document.getElementById('forms-mode').style.display     = m === 'forms' ? 'block' : 'none';
-  document.getElementById('users-mode').style.display     = m === 'users' ? 'block' : 'none';
-  document.getElementById('station-mode').style.display   = m === 'station' ? 'block' : 'none';
+  setPaneDisplay('jobs-mode', m === 'jobs');
+  setPaneDisplay('products-mode', m === 'products');
+  setPaneDisplay('inventory-mode', m === 'inventory');
+  setPaneDisplay('reports-mode', m === 'reports');
+  setPaneDisplay('stickers-mode', m === 'stickers');
+  setPaneDisplay('forms-mode', m === 'forms');
+  setPaneDisplay('users-mode', m === 'users');
+  setPaneDisplay('station-mode', m === 'station');
   const clientViewEl = document.getElementById('client-view-mode');
   if (clientViewEl) clientViewEl.style.display = m === 'client-view' ? 'block' : 'none';
   const addBtn    = document.getElementById('topbar-add');
@@ -25950,17 +25959,15 @@ function renderUsersTab() {
   if (inviteBtn) inviteBtn.style.display = hasPerm('user_admin') ? '' : 'none';
   const stats = {
     total: usersList.length,
-    admins: usersList.filter(u => userRolesOf(u).includes('admin')).length,
-    managers:  usersList.filter(u => userRolesOf(u).includes('production_manager')).length,
-    store:     usersList.filter(u => userRolesOf(u).includes('store_manager')).length,
-    operators: usersList.filter(u => userRolesOf(u).includes('operator')).length,
+    superAdmins: usersList.filter(u => userRolesOf(u).includes('super_admin')).length,
+    admins: usersList.filter(u => userRolesOf(u).includes('admin') && !userRolesOf(u).includes('super_admin')).length,
+    finance: usersList.filter(u => userRolesOf(u).includes('finance')).length,
   };
   document.getElementById('users-stats-row').innerHTML = `
     <div class="stat"><div class="stat-label">Total Users</div><div class="stat-value">${stats.total}</div></div>
+    <div class="stat"><div class="stat-label">Super Admins</div><div class="stat-value">${stats.superAdmins}</div></div>
     <div class="stat"><div class="stat-label">Admins</div><div class="stat-value">${stats.admins}</div></div>
-    <div class="stat"><div class="stat-label">Prod. Managers</div><div class="stat-value">${stats.managers}</div></div>
-    <div class="stat"><div class="stat-label">Store Managers</div><div class="stat-value">${stats.store}</div></div>
-    <div class="stat"><div class="stat-label">Operators</div><div class="stat-value">${stats.operators}</div></div>
+    <div class="stat"><div class="stat-label">Finance</div><div class="stat-value">${stats.finance}</div></div>
   `;
   document.getElementById('users-list').innerHTML = usersList.map(u => {
     const last = u.last_login_at ? fmtDMYT(u.last_login_at) : 'never';
@@ -25979,18 +25986,13 @@ function renderUsersTab() {
           ? `<span class="inv-badge" style="text-transform:uppercase;font-size:10px;letter-spacing:0.04em;background:var(--bg2);color:var(--text2);padding:4px 10px;border-radius:10px;">${esc(visibleRolesOf(u).map(roleLabel).join(' + '))}${u.client_company ? ' · '+esc(u.client_company) : ''}</span>`
           : `<div class="user-role-checks" data-uid="${u.id}" style="display:flex;flex-direction:column;gap:4px;max-width:300px;">
               <div style="display:flex;flex-wrap:wrap;gap:4px 10px;">
-                ${(isSuperAdmin() ? [['super_admin','Super Admin']] : []).concat([['admin','Admin'],['ceo','CEO'],['finance','Finance'],['procurement','Procurement']]).map(([r,lbl]) => `
+                ${(isSuperAdmin() ? [['super_admin','Super Admin']] : []).concat([['admin','Admin'],['finance','Finance']]).map(([r,lbl]) => `
                   <label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;white-space:nowrap;">
                     <input type="checkbox" value="${r}" ${userRolesOf(u).includes(r)?'checked':''}
                            ${isMe && (r==='admin' || r==='super_admin') ? 'disabled' : ''}
                            onchange="changeUserRoles(${u.id})"> ${lbl}
                   </label>`).join('')}
               </div>
-              <select class="user-client-company" data-uid="${u.id}" onchange="changeUserRoles(${u.id})"
-                      style="${userRolesOf(u).includes('client') ? '' : 'display:none;'}font-size:11px;padding:3px 6px;border:1px solid var(--border);border-radius:4px;">
-                <option value="">— Pick company —</option>
-                ${clientCompanyOptions(u.client_company)}
-              </select>
             </div>`}
       </div>
       <div class="inv-actions">
@@ -26193,7 +26195,7 @@ async function cycleRolePermission(key, role) {
 
 // Column order for every row — this app's roles only. Super Admin stays
 // locked (always full access); Finance and Procurement are editable.
-const COLUMN_ROLES = ['super_admin', 'admin', 'ceo', 'finance', 'procurement'];
+const COLUMN_ROLES = ['super_admin', 'admin', 'finance'];
 // Rows where every role except Super Admin is force-locked to HIDDEN,
 // no matter what's saved in the DB — currently just the Access Register
 // row itself, so no role can ever grant itself (or another role) a way
@@ -26232,9 +26234,7 @@ function renderAccessRegisterHtml(matrixData) {
               <th>Capability</th>
               <th>Super<br>Admin</th>
               <th>Admin</th>
-              <th>CEO</th>
               <th>Finance</th>
-              <th>Procurement</th>
             </tr>
           </thead>
           <tbody>${rowDefs.map(r => accGroupRow(matrixData, r.key, r.type)).join('')}</tbody>
@@ -26261,19 +26261,11 @@ function openInviteUser() {
     <div class="form-group"><label class="form-label">Email *</label><input type="email" id="invite-email" placeholder="someone@gmail.com"></div>
     <div class="form-group"><label class="form-label">Roles <span style="font-weight:400;color:var(--text2);">(pick one or more — access combines)</span></label>
       <div id="invite-roles" style="display:flex;flex-direction:column;gap:6px;">
-        ${(isSuperAdmin() ? [['super_admin','Super Admin',false]] : []).concat([['admin','Admin',false],['ceo','CEO',false],['finance','Finance',true],['procurement','Procurement',false]]).map(([r,lbl,def]) => `
+        ${(isSuperAdmin() ? [['super_admin','Super Admin',false]] : []).concat([['admin','Admin',false],['finance','Finance',true]]).map(([r,lbl,def]) => `
           <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;">
             <input type="checkbox" value="${r}" ${def?'checked':''} onchange="onInviteRolesChanged()"> ${lbl}
           </label>`).join('')}
       </div>
-    </div>
-    <div class="form-group" id="invite-company-wrap" style="display:none;">
-      <label class="form-label">Client company *</label>
-      <select id="invite-company" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:#fff;">
-        <option value="">— Pick company —</option>
-        ${clientCompanyOptions('')}
-      </select>
-      <div style="font-size:12px;color:var(--text2);margin-top:4px;">Client accounts see ONLY jobs whose Company field matches this exact value.</div>
     </div>
     <div style="font-size:12px;color:var(--text2);">They'll be able to sign in with this exact email via Google. If their Google account uses a different address, invite that one instead.</div>
     <div class="modal-actions">
