@@ -322,8 +322,12 @@ const ROLE_PERMISSION_DEFAULTS = {
   job_print:            { label: 'Print a job card (display only — not independently server-enforced)', levels: { admin: 'yes', production_manager: 'yes', ceo: 'yes' } },
   job_view:             { label: 'View the Jobs list & every status tab', levels: { admin: 'yes', ceo: 'yes', production_manager: 'yes', store_manager: 'yes', finance: 'yes', operator: 'yes' } },
   job_delete:           { label: 'Delete a job', levels: { admin: 'yes' } },
-  delivery_write:       { label: 'Record a delivery (including linked-job challans)', levels: { admin: 'yes', production_manager: 'yes', finance: 'yes' } },
-  delivery_delete:      { label: 'Delete a delivery ledger entry', levels: { admin: 'yes' } },
+  // Recording deliveries left this app on 2026-09-19, but this key stays:
+  // it's still half of the stage-forward gate (see requireStageForwardWriter
+  // / canDeliverNow), which is what lets Finance move a job into Ready to
+  // Deliver / Delivered without job_write. It has no Access Register row
+  // (none of the coarse keys do), so it isn't clutter in the UI either.
+  delivery_write:       { label: 'Move a job forward into Ready to Deliver / Delivered', levels: { admin: 'yes', production_manager: 'yes', finance: 'yes' } },
   wastage_adjustment:   { label: 'Wastage Adjustment (adjust/un-adjust), the Finalized Jobs tab, and the Manual Job Card Consumption report', levels: {} },
   inventory_write:      { label: 'Add/edit inventory items, stock in/out (manual + bulk), and issue stock (fresh or offcut) to a job', levels: { admin: 'yes', store_manager: 'yes' } },
   inventory_view:       { label: 'View the Inventory tab', levels: { admin: 'yes', ceo: 'yes', production_manager: 'yes', store_manager: 'yes', finance: 'yes' } },
@@ -359,18 +363,11 @@ const ROLE_PERMISSION_DEFAULTS = {
   // at all. Every job_btn_* is 3-state (yes=Edit / view=View, disabled /
   // hidden=not shown) — one row per button on the Jobs tab.
   job_tab_access:          { label: 'Jobs tab — view the job list and every status tab', levels: { admin: 'view', ceo: 'view', production_manager: 'view', store_manager: 'view', finance: 'view', operator: 'view' } },
-  job_btn_edit:            { label: 'Edit button — also covers Add Special Color, Request Extra Packets, Show to Client, Edit Group, View Jobs (in a group), and Add/Remove Job from Group', levels: { admin: 'yes', production_manager: 'yes' } },
   job_btn_history:         { label: 'History button', levels: { admin: 'yes', production_manager: 'yes', ceo: 'view', store_manager: 'view', finance: 'view' } },
   job_btn_link:            { label: 'Link Job button', levels: { admin: 'yes', production_manager: 'yes' } },
   job_btn_print:           { label: 'Print button', levels: { admin: 'yes', production_manager: 'yes', ceo: 'yes' } },
-  job_btn_block:           { label: 'Block button', levels: { admin: 'yes', production_manager: 'yes' } },
   job_btn_delete:          { label: 'Delete button', levels: { admin: 'yes' } },
-  job_btn_create_mil:      { label: 'Create Mil Job button', levels: { admin: 'yes', production_manager: 'yes' } },
-  job_btn_new_job:         { label: 'New Job button', levels: { admin: 'yes', production_manager: 'yes' } },
   job_btn_stage_forward:   { label: 'Stage forwarding — also covers Process to CTP/Printing and Finalize as Delivered', levels: { admin: 'yes', production_manager: 'yes' } },
-  job_btn_record_delivery: { label: 'Record Delivery button — also covers Deliver Linked and group (FIFO) Record Delivery', levels: { admin: 'yes', production_manager: 'yes', finance: 'yes' } },
-  job_btn_delete_delivery: { label: 'Delete Delivery button', levels: { admin: 'yes' } },
-  job_btn_duplicate:       { label: 'Duplicate button', levels: { admin: 'yes', production_manager: 'yes' } },
   // Distinct from the existing wastage_adjustment group above (which also
   // covers the Finalized Jobs tab and the Manual Job Card Consumption
   // report, and keeps enforcing those exactly as before) — this is just
@@ -382,28 +379,15 @@ const ROLE_PERMISSION_DEFAULTS = {
   // but lives under this Jobs block in the register per request since it's
   // job-related. Single row, not split into sub-buttons: view = can open
   // the tab and look, edit = can also print.
-  job_btn_stickers:        { label: 'Stickers tab — open & print', levels: { admin: 'yes', production_manager: 'yes', ceo: 'yes' } },
 
   // Access Register — Inventory tab (Imports lives inside this same tab,
   // per request, rather than its own top-level register tab). Same "not
   // wired into any gate yet" note as the Jobs block above applies here —
   // inventory_write/inventory_view/inventory_delete/inventory_reverse
   // keep enforcing exactly as before in the meantime.
-  inventory_tab_access:    { label: 'Inventory tab — view the paper list', levels: { admin: 'view', ceo: 'view', production_manager: 'view', store_manager: 'view', finance: 'view' } },
-  imports_tab_access:      { label: 'Imports — view the booked-shipments report', levels: { admin: 'view', ceo: 'view', production_manager: 'view', store_manager: 'view', finance: 'view' } },
-  inv_btn_stock_in:        { label: 'Stock In button — also covers Stock In (Bulk) and receiving a shipment in Imports', levels: { admin: 'yes', store_manager: 'yes' } },
-  inv_btn_stock_out:       { label: 'Stock Out button — also covers Stock Out (Bulk), Issue Stock in the Pending Stock queue, and Approve/Reject a packet top-up request', levels: { admin: 'yes', store_manager: 'yes' } },
-  inv_btn_offcut_issuance: { label: 'Offcut Issuance button', levels: { admin: 'yes', store_manager: 'yes' } },
-  inv_btn_history:         { label: 'History button', levels: { admin: 'yes', ceo: 'view', production_manager: 'view', store_manager: 'yes', finance: 'view' } },
-  inv_btn_edit:            { label: 'Edit button', levels: { admin: 'yes', store_manager: 'yes' } },
-  inv_btn_delete:          { label: 'Delete button', levels: { admin: 'yes' } },
-  inv_btn_add_offcut:      { label: 'Add Offcut button', levels: { admin: 'yes', store_manager: 'yes' } },
-  inv_btn_add_paper:       { label: 'Add Paper button', levels: { admin: 'yes', store_manager: 'yes' } },
-  inv_btn_add_import:      { label: 'Add Import button — also covers Edit and Cancel on an import', levels: { admin: 'yes', store_manager: 'yes' } },
   // 'yes' = unconditional bypass; '30-day' = reversible reasons only,
   // within the last 30 days — same tier the existing inventory_reverse
   // group already uses, kept as this row's own extra level too.
-  inv_btn_reverse:         { label: 'Reverse button', levels: { admin: 'yes', store_manager: '30-day' }, extra: ['30-day'] },
 
   // Access Register — Reports tab. All 2-state (view/hidden) — reports are
   // read-only, there's no "edit" concept for any of them. Same "not wired
@@ -422,11 +406,8 @@ const ROLE_PERMISSION_DEFAULTS = {
   // Empty by default, same as the old wastage_adjustment group it mirrors
   // (only Super Admin gets this today).
   rpt_manual_job_card_consumption: { label: 'Manual Job Card Consumption report — also covers its own Archive view', levels: {} },
-  rpt_jobs_report:                 { label: 'Jobs Report', levels: { admin: 'view', ceo: 'view', production_manager: 'view', finance: 'view' } },
-  rpt_sale_report:                 { label: 'Sale Report — full invoicing detail (Rate, Sale Tax, Company/Destination/NTN)', levels: { admin: 'view', finance: 'view' } },
   // Finance role deliberately excluded by default — Hamza wants the summed
   // amount reserved for admin/ceo, not the Finance role.
-  rpt_sale_report_totals:          { label: 'Sale Report — totals row at the bottom (summed Rate w/o & w/ Sale Tax)', levels: { admin: 'view', ceo: 'view' } },
 
   // Access Register — Users tab. Same "not wired into any gate yet" note
   // applies — user_view/user_admin/operator_admin keep enforcing exactly
@@ -453,9 +434,6 @@ const ROLE_PERMISSION_DEFAULTS = {
   // canRecordDelivery() already granted before this tab had its own
   // register rows, so nothing changes out of the box; Hamza can now
   // adjust per role without a redeploy.
-  products_tab_access:  { label: 'Product Rate tab — view jobs grouped by product', levels: { admin: 'view', finance: 'view' } },
-  products_btn_rate:    { label: 'Rate — edit a Product Rate tile\'s default Rate, and use its "+" (fold another product in)', levels: { admin: 'yes', finance: 'yes' } },
-  products_btn_revenue: { label: 'Revenue / Avg Rate — see those two stats on a Product Rate tile', levels: { admin: 'view', finance: 'view' } },
 };
 // In-memory cache, refreshed on write. Read on every request, so it must
 // never be empty/stale relative to the DB for longer than one write's
@@ -1850,16 +1828,6 @@ function requireStageForwardWriter(req, res, next) {
   }
   next();
 }
-// Deliveries — admin, PM, or finance. Finance holds no other job-write
-// role but is the only user allowed to record shipments (which is why it
-// exists as a separate middleware from requireJobsWriter).
-function requireDeliveryWriter(req, res, next) {
-  if (!req.user) return res.status(401).json({ error: 'Not signed in' });
-  if (!canRecordDelivery(req.user)) {
-    return res.status(403).json({ error: 'Not allowed — delivery write access required' });
-  }
-  next();
-}
 // Inventory + imports writes — admin or store_manager.
 function requireInventoryWriter(req, res, next) {
   if (!req.user) return res.status(401).json({ error: 'Not signed in' });
@@ -1929,12 +1897,6 @@ app.use(authMiddleware);
 // its own permission check afterwards. Wastage Adjustment lives under
 // /api/wastage-adjustment and is unaffected.
 const FINANCE_JOB_WRITES_ALLOWED = [
-  // Deliveries — recording moved to this app (route checks delivery_write / delivery_delete)
-  ['POST',   /^\/api\/jobs\/\d+\/deliveries$/],          // record a delivery
-  ['DELETE', /^\/api\/jobs\/\d+\/deliveries\/\d+$/],     // remove a delivery entry
-  ['PATCH',  /^\/api\/jobs\/\d+\/deliveries\/\d+$/],     // edit a delivery entry's reference fields
-  ['POST',   /^\/api\/jobs\/\d+\/deliver-linked$/],      // joint delivery with a linked job
-  ['POST',   /^\/api\/groups\/deliver$/],                // MIL group delivery
   // Print counter (printing is viewing)
   ['POST',   /^\/api\/jobs\/\d+\/printed$/],
   // Link / Unlink two job cards (route checks job_write)
@@ -1950,10 +1912,6 @@ const FINANCE_JOB_WRITES_ALLOWED = [
   ['PATCH',  /^\/api\/jobs\/\d+\/stage$/, body => !!body
     && Number.isInteger(body.stage_index)
     && body.stage_index >= READY_TO_DELIVER_INDEX],
-  // Set a job's Rate / Tax % (route checks delivery_write)
-  ['PATCH',  /^\/api\/jobs\/\d+\/pricing$/],
-  // Set a job's Cartons/Packets override (route checks delivery_write)
-  ['PATCH',  /^\/api\/jobs\/\d+\/cartons-packets$/],
 ];
 app.use((req, res, next) => {
   if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') return next();
@@ -6284,259 +6242,9 @@ function readyQtyFromParticularsRow(row) {
   if (fromEntries > 0) return fromEntries;
   return String(row.quantity || '').split('|').reduce((a, s) => a + parseQtyMult(s).total, 0);
 }
-// Delivery eligibility — same rule everywhere a delivery can be recorded
-// (single-job endpoint, FIFO group delivery, AND Linked-Jobs joint
-// delivery): from Ready to Deliver (6) onward, or earlier once QC has
-// signed off some Ready to Delivery Qty — that can land before the job
-// formally reaches Pasting, e.g. a batch pulled out and QC'd early while
-// the rest of the job is still at Print. Falls back to Pasting's own
-// running total if QC hasn't signed off anything yet. Mirrors the
-// client's isPartialReady()/earlyReadyTotal(). Returns an error string,
-// or null when eligible.
-function deliveryEligibilityError(job) {
-  // Shade cards are proofs, not full production runs — ticking Shade Card
-  // on a job (even mid-stage) makes it deliverable right away, skipping
-  // the normal Ready-to-Deliver / ready-cartons gate below. Mirrors
-  // canDeliverNow() on the client.
-  if (job.is_shade_card) return null;
-  const curStage = job.stage_index || 0;
-  if (curStage >= 6) return null;
-  const parts = job.particulars || {};
-  const readyQty = readyQtyFromParticularsRow(parts.delivered_cartons_qty)
-    || readyQtyFromParticularsRow(parts.pasted_cartons_qty);
-  if (readyQty > 0) return null;
-  return `Job E-${job.id} is at stage "${STAGES[curStage]||'?'}" with no cartons ready yet — record a Ready to Delivery Qty (or pasted cartons) before recording a delivery.`;
-}
 
-// Atomically claims the next Delivery Challan number for a shade-card
-// delivery. Single UPDATE (Postgres row-locks it), so two shade cards
-// delivered at the same moment can never collide on the same number —
-// the whole point, since the store keeper copies this same number by
-// hand into the physical DC register right after.
-async function nextShadeCardDcNumber(sql) {
-  const rows = await sql`
-    UPDATE shade_card_dc_counter SET next_number = next_number + 1
-     WHERE id = 1
-     RETURNING next_number - 1 AS assigned
-  `;
-  return rows[0].assigned;
-}
 
-// Builds the { deliveries, delqty, stage_index, stages, log } fields to
-// persist for one delivery entry on one job — shared by the single-job
-// delivery endpoint and the Linked-Jobs joint delivery endpoint so the
-// two never drift out of sync (auto-advance-to-Delivered logic identical
-// in both places).
-function computeDeliveryUpdate(job, { cartonsN, date, notes, poNo, batchNo, fbrNo, msiNo, linkedJobId, byEmail }) {
-  const bookedQty  = parseFloat(String(job.qty || '').replace(/[^0-9.\-]/g, '')) || 0;
-  const priorTotal = sumDeliveryCartons(job.deliveries);
-  const nextTotal  = priorTotal + cartonsN;
-  const entry = {
-    cartons: String(cartonsN),
-    date, notes,
-    po_no: poNo,
-    batch_no: batchNo,
-    fbr_no: fbrNo || null,
-    msi_no: msiNo || null,
-    by: byEmail || 'unknown',
-    at: new Date().toISOString(),
-    linked_job_id: linkedJobId || null,
-  };
-  const deliveries = [...(Array.isArray(job.deliveries) ? job.deliveries : []), entry];
-  // Stage/log timestamps reflect the delivery's OWN date (what the store
-  // keeper picked, possibly backdated) rather than the instant this API
-  // call happens to run — so Job History, "Day in production", and any
-  // report scanning log[] show the backdated delivery under the day it
-  // actually shipped, not under today. entry.at above stays true real-time
-  // audit metadata (when the record was entered), which is intentionally
-  // different from when the shipment happened.
-  const deliveryInstant = businessInstantForDate(date);
-  const nowIso = deliveryInstant.toISOString();
-  const time   = businessStamp(deliveryInstant);
-  const by     = byEmail || 'unknown';
-  let stage_index = job.stage_index || 0;
-  let stages = (job.stages && typeof job.stages === 'object') ? { ...job.stages } : {};
-  let log = Array.isArray(job.log) ? [...job.log] : [];
-  log.push({ stage: STAGES[stage_index], status: stages[stage_index]?.status || 'active',
-    notes: `Delivery recorded: ${cartonsN.toLocaleString()} cartons${notes ? ' — ' + notes : ''}`,
-    by: `${by} (${STAGES[stage_index] || '?'})`, time });
-  // With no booked P.O. Qty (bookedQty falsy — routine for shade cards,
-  // which never carry one) there's no target to compare against, so any
-  // recorded shipment counts as the whole delivery rather than leaving
-  // the job stuck at "Ready to Deliver" forever waiting to clear a
-  // booked qty of 0.
-  const deliveryComplete = bookedQty ? nextTotal >= bookedQty : nextTotal > 0;
-  if (deliveryComplete && stage_index < 7) {
-    // Mark 6 done, move to 7.
-    stages[6] = { ...(stages[6] || {}), status: 'done', by, time, at: nowIso };
-    stages[7] = { status: 'done', notes: '', by, time, at: nowIso };
-    stage_index = 7;
-    log.push({ stage: STAGES[7], status: 'done', notes: bookedQty ? `All ${bookedQty.toLocaleString()} pcs delivered` : `${nextTotal.toLocaleString()} delivered (no booked qty set)`, by: `${by} (${STAGES[7]})`, time });
-  }
-  return { deliveries, delqty: String(nextTotal), stage_index, stages, log, entry, nextTotal, bookedQty };
-}
 
-// Read-only peek at the next Delivery Challan number — does NOT claim/
-// increment it, purely so the delivery form can show the PM what number
-// they're about to get before they actually submit. The real, atomic
-// claim still happens in POST /deliveries via nextShadeCardDcNumber();
-// if two shade cards get delivered in the same moment, this peeked
-// number can go stale for whichever one submits second — harmless,
-// since that one just gets re-peeked/assigned the number after it.
-app.get('/api/shade-card-dc/peek', requireAuth, async (req, res) => {
-  try {
-    await dbReady;
-    const sql = getDb();
-    const rows = await sql`SELECT next_number FROM shade_card_dc_counter WHERE id = 1`;
-    res.json({ next: rows.length ? rows[0].next_number : 1 });
-  } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
-});
-
-// CREATE a partial delivery. Input is CARTONS — the only quantity unit
-// used for deliveries in this shop (1 carton == 1 piece per the owner).
-// delqty stays in sync as the running sum of cartons so the tile's
-// "Delivered Qty" and the client view keep working with no pieces math.
-app.post('/api/jobs/:id/deliveries', requireDeliveryWriter, async (req, res) => {
-  try {
-    await dbReady;
-    const sql = getDb();
-    const id = parseInt(req.params.id, 10);
-    const cartons = String(req.body.cartons ?? '').trim();
-    const date    = String(req.body.date    ?? '').trim() || businessDateISO();
-    let notes     = String(req.body.notes   ?? '').trim() || null;
-    const poNo    = String(req.body.po_no    ?? '').trim() || null;
-    const batchNo = String(req.body.batch_no ?? '').trim() || null;
-    const fbrNo   = String(req.body.fbr_no   ?? '').trim() || null;
-    const msiNo   = String(req.body.msi_no   ?? '').trim() || null;
-    const cartonsN = parseFloat(cartons.replace(/[^0-9.\-]/g, ''));
-    if (!Number.isFinite(cartonsN) || cartonsN <= 0) {
-      return res.status(400).json({ error: 'Delivery cartons must be a positive number.' });
-    }
-    // Rate/tax_pct optionally ride along with the delivery (the client's
-    // Rate/Tax fields only render for a delivery_write holder — see
-    // showPricingFields in deliveriesSection). Both keys must be present
-    // together for pricing to be touched at all, so a manager-deliver-
-    // style caller that never sends them leaves rate/tax_pct untouched.
-    const hasPricing = Object.prototype.hasOwnProperty.call(req.body, 'rate') || Object.prototype.hasOwnProperty.call(req.body, 'tax_pct');
-    let rate = null, taxPct = null;
-    if (hasPricing) {
-      const rateRaw = req.body.rate;
-      rate = (rateRaw === null || rateRaw === undefined || rateRaw === '') ? null : Number(rateRaw);
-      if (rate !== null && (!Number.isFinite(rate) || rate < 0)) {
-        return res.status(400).json({ error: 'Rate must be a non-negative number.' });
-      }
-      taxPct = Number(req.body.tax_pct);
-      if (!Number.isFinite(taxPct) || taxPct < 0) {
-        return res.status(400).json({ error: 'Sale Tax % must be a non-negative number.' });
-      }
-    }
-    const rows = await sql`SELECT * FROM jobs WHERE id=${id} AND deleted_at IS NULL`;
-    if (!rows.length) return res.status(404).json({ error: 'Job not found' });
-    const job = rows[0];
-    const eligErr = deliveryEligibilityError(job);
-    if (eligErr) return res.status(400).json({ error: eligErr });
-    // Shade cards don't get a challan from a customer PO — they ship
-    // against an internally-numbered Delivery Challan (DC-01, DC-02, …)
-    // that the store also writes into the physical DC register by hand.
-    // ALWAYS auto-assigned for a shade card, overwriting whatever the
-    // client sent: the client only ever shows this as a read-only
-    // preview (see deliveriesSection), never a free-text field to type
-    // into, and the sequence must stay gapless/collision-free to match
-    // the physical register — so this is not a "leave it alone if typed"
-    // convenience, it's the only source of truth.
-    if (job.is_shade_card) {
-      const n = await nextShadeCardDcNumber(sql);
-      notes = `DC-${String(n).padStart(2, '0')}`;
-    }
-    // No cap against booked qty — the shop routinely ships slightly more
-    // or less than the P.O. asked for (yield, over-run, customer top-up
-    // request). Recording reality is the priority; the tile just shows
-    // the running total against the booked qty for context.
-    const { deliveries, delqty, stage_index, stages, log, entry, nextTotal, bookedQty } =
-      computeDeliveryUpdate(job, { cartonsN, date, notes, poNo, batchNo, fbrNo, msiNo, byEmail: req.user?.email });
-    const nextRate   = hasPricing ? rate   : job.rate;
-    const nextTaxPct = hasPricing ? taxPct : job.tax_pct;
-    const updated = await sql`
-      UPDATE jobs
-         SET deliveries  = ${JSON.stringify(deliveries)},
-             delqty      = ${delqty},
-             stage_index = ${stage_index},
-             stages      = ${JSON.stringify(stages)},
-             log         = ${JSON.stringify(log)},
-             rate        = ${nextRate},
-             tax_pct     = ${nextTaxPct}
-       WHERE id = ${id}
-       RETURNING *
-    `;
-    await logAudit(sql, req, {
-      action: 'job.delivery.add',
-      entityType: 'job',
-      entityId: id,
-      summary: `Recorded delivery of ${cartonsN.toLocaleString()} cartons for Job E-${id} (total ${nextTotal.toLocaleString()}${bookedQty ? '/' + bookedQty.toLocaleString() : ''})${hasPricing ? `; pricing set: rate ${rate === null ? '—' : rate}, tax ${taxPct}%` : ''}`,
-      metadata: { cartons: entry.cartons, date, total: nextTotal, booked: bookedQty, rate: hasPricing ? rate : undefined, tax_pct: hasPricing ? taxPct : undefined },
-    });
-    res.json(updated[0]);
-  } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
-});
-
-// Manager: record a delivery straight from the Station terminal, PIN-
-// verified. Scoped to shade-card jobs only (is_shade_card) — every other
-// job's delivery still goes through the normal Jobs-tab ledger
-// (requireDeliveryWriter: admin / PM / finance). Shade cards are the one
-// delivery a manager needs to log from the floor without a desktop.
-// Shares deliveryEligibilityError()/computeDeliveryUpdate() with the
-// route above so the two never drift out of sync.
-app.post('/api/jobs/:id/manager-deliver', requireStationUser, requirePermission('station_manager_pin'), async (req, res) => {
-  try {
-    await dbReady;
-    const sql = getDb();
-    const id = parseInt(req.params.id, 10);
-    const v = await verifyManagerPin(sql, String(req.body.pin || '').trim());
-    if (v.error) return res.status(v.status).json({ error: v.error });
-    const rows = await sql`SELECT * FROM jobs WHERE id = ${id} AND deleted_at IS NULL`;
-    if (!rows.length) return res.status(404).json({ error: 'Job not found' });
-    const job = rows[0];
-    if (!job.is_shade_card) {
-      return res.status(400).json({ error: 'Only shade-card jobs can be delivered from the Station — use the Jobs tab for everything else.' });
-    }
-    const cartons = String(req.body.cartons ?? '').trim();
-    const date    = String(req.body.date    ?? '').trim() || businessDateISO();
-    let notes     = String(req.body.notes   ?? '').trim() || null;
-    const poNo    = String(req.body.po_no    ?? '').trim() || null;
-    const batchNo = String(req.body.batch_no ?? '').trim() || null;
-    const cartonsN = parseFloat(cartons.replace(/[^0-9.\-]/g, ''));
-    if (!Number.isFinite(cartonsN) || cartonsN <= 0) {
-      return res.status(400).json({ error: 'Delivery cartons must be a positive number.' });
-    }
-    const eligErr = deliveryEligibilityError(job);
-    if (eligErr) return res.status(400).json({ error: eligErr });
-    // Same auto-numbered Delivery Challan as the normal /deliveries route
-    // (see its comment) — every job reaching this endpoint is already
-    // shade-card-only (checked above), so this always fires.
-    const n = await nextShadeCardDcNumber(sql);
-    notes = `DC-${String(n).padStart(2, '0')}`;
-    const { deliveries, delqty, stage_index, stages, log, entry, nextTotal, bookedQty } =
-      computeDeliveryUpdate(job, { cartonsN, date, notes, poNo, batchNo, byEmail: `${v.operator.name} (Manager)` });
-    const updated = await sql`
-      UPDATE jobs
-         SET deliveries  = ${JSON.stringify(deliveries)},
-             delqty      = ${delqty},
-             stage_index = ${stage_index},
-             stages      = ${JSON.stringify(stages)},
-             log         = ${JSON.stringify(log)}
-       WHERE id = ${id}
-       RETURNING *
-    `;
-    await logAudit(sql, req, {
-      action: 'job.delivery.add',
-      entityType: 'job',
-      entityId: id,
-      summary: `Recorded delivery of ${cartonsN.toLocaleString()} cartons for Job E-${id} (shade card) from Station by manager ${v.operator.name} (total ${nextTotal.toLocaleString()}${bookedQty ? '/' + bookedQty.toLocaleString() : ''})`,
-      metadata: { cartons: entry.cartons, date, total: nextTotal, booked: bookedQty },
-    });
-    res.json(updated[0]);
-  } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
-});
 
 // ── Linked Jobs (pairwise) ────────────────────────────────────────
 // Two job cards for the same product placed at different times, printed
@@ -6667,337 +6375,11 @@ app.get('/api/groups', requireAuth, async (req, res) => {
   } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
 });
 
-// FIFO group delivery — auto-deducts from oldest job first, spilling into
-// newer jobs as needed. Uses computeDeliveryUpdate so auto-advance-to-
-// Delivered fires identically to a normal single-job delivery.
-app.post('/api/groups/deliver', requireDeliveryWriter, async (req, res) => {
-  try {
-    await dbReady;
-    const sql = getDb();
-    const { group_name, cartons: cartonsRaw, date, notes, po_no, batch_no, fbr_no } = req.body || {};
-    if (!group_name || !String(group_name).trim()) return res.status(400).json({ error: 'group_name required' });
-    const totalCartons = parseFloat(String(cartonsRaw || '').replace(/[^0-9.\-]/g, ''));
-    if (!Number.isFinite(totalCartons) || totalCartons <= 0) return res.status(400).json({ error: 'cartons must be a positive number' });
-    const delivDate = String(date || '').trim() || businessDateISO();
-    const poNo     = String(po_no    || '').trim() || null;
-    const batchNo  = String(batch_no || '').trim() || null;
-    const notesStr = String(notes    || '').trim() || null;
-    const fbrNo    = String(fbr_no   || '').trim() || null;
-    const byEmail  = req.user?.email || 'unknown';
-    const groupJobs = await sql`
-      SELECT * FROM jobs
-      WHERE stock_group_name = ${String(group_name).trim()} AND deleted_at IS NULL
-      ORDER BY id ASC`;
-    if (!groupJobs.length) return res.status(404).json({ error: 'No jobs found in this group' });
-    let remaining = totalCartons;
-    const deliveriesMade = [];
-    for (const job of groupJobs) {
-      if (remaining <= 0) break;
-      if (deliveryEligibilityError(job)) continue;
-      const readyQty = parseFloat(
-        ((job.particulars || {}).delivered_cartons_qty || {}).quantity || ''
-      ) || parseFloat(String(job.cartonqty || '').replace(/[^0-9.\-]/g, '')) || 0;
-      const alreadyDelivered = sumDeliveryCartons(job.deliveries);
-      const available = Math.max(0, readyQty - alreadyDelivered);
-      if (available <= 0) continue;
-      const allocate = Math.min(available, remaining);
-      remaining -= allocate;
-      const { deliveries, delqty, stage_index, stages, log } = computeDeliveryUpdate(job, {
-        cartonsN: allocate, date: delivDate, notes: notesStr, poNo, batchNo, fbrNo, byEmail,
-      });
-      await sql`
-        UPDATE jobs
-           SET deliveries  = ${JSON.stringify(deliveries)},
-               delqty      = ${delqty},
-               stage_index = ${stage_index},
-               stages      = ${JSON.stringify(stages)},
-               log         = ${JSON.stringify(log)}
-         WHERE id = ${job.id}`;
-      deliveriesMade.push({ job_id: job.id, cartons: allocate });
-    }
-    if (!deliveriesMade.length) return res.status(400).json({ error: 'No cartons available — all group jobs may be at an early stage or fully delivered.' });
-    const fulfilled = totalCartons - remaining;
-    await logAudit(sql, req, {
-      action: 'group.deliver', entityType: 'group', entityId: null,
-      summary: `FIFO delivery from group "${group_name}": ${fulfilled} cartons across ${deliveriesMade.length} job(s)${remaining > 0 ? ` — ${remaining} unfulfilled` : ''}`,
-    });
-    res.json({ ok: true, deliveries_made: deliveriesMade, unfulfilled: remaining });
-  } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
-});
 
-// ── Pricing (Supreme Art Finance only) ──────────────────────────
-// Rate (price per unit carton) and Tax % on a job — set once, stays fixed
-// until whoever can record deliveries changes it (same model as everything
-// else on the job card). Uses requireDeliveryWriter, same capability that
-// already gates recording a delivery, rather than a brand-new permission
-// key — the Access Register has no row wired to any key this app actually
-// checks (job_write/job_delete/delivery_write included), so a new key
-// would be permanently ungrantable until that's fixed separately.
-app.patch('/api/jobs/:id/pricing', requireDeliveryWriter, async (req, res) => {
-  try {
-    await dbReady;
-    const sql = getDb();
-    const id = parseInt(req.params.id, 10);
-    const rateRaw = req.body?.rate;
-    const taxRaw  = req.body?.tax_pct;
-    const rate = (rateRaw === null || rateRaw === undefined || rateRaw === '') ? null : Number(rateRaw);
-    if (rate !== null && (!Number.isFinite(rate) || rate < 0)) {
-      return res.status(400).json({ error: 'Rate must be a non-negative number.' });
-    }
-    const taxPct = Number(taxRaw);
-    if (!Number.isFinite(taxPct) || taxPct < 0) {
-      return res.status(400).json({ error: 'Tax % must be a non-negative number.' });
-    }
-    const rows = await sql`SELECT id, name, rate, tax_pct FROM jobs WHERE id = ${id} AND deleted_at IS NULL`;
-    if (!rows.length) return res.status(404).json({ error: 'Job not found' });
-    const updated = await sql`
-      UPDATE jobs SET rate = ${rate}, tax_pct = ${taxPct}
-       WHERE id = ${id}
-       RETURNING *
-    `;
-    await logAudit(sql, req, {
-      action: 'job.pricing.update',
-      entityType: 'job',
-      entityId: id,
-      summary: `Job E-${id} pricing set: rate ${rate === null ? '—' : rate}, tax ${taxPct}%`,
-      metadata: { rate, tax_pct: taxPct, prior_rate: rows[0].rate, prior_tax_pct: rows[0].tax_pct },
-    });
-    res.json(updated[0]);
-  } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
-});
 
-// Cartons/Packets override for one job — the figure shown next to Unit
-// Cartons on the Record Delivery form. Blank/empty clears the override so
-// the display falls back to the Pasting station's own ready_packets_qty.
-// Job-level (not per-delivery), same as Rate: one job, one figure.
-app.patch('/api/jobs/:id/cartons-packets', requireDeliveryWriter, async (req, res) => {
-  try {
-    await dbReady;
-    const sql = getDb();
-    const id = parseInt(req.params.id, 10);
-    const raw = req.body?.cartons_packets;
-    const value = (raw === null || raw === undefined || String(raw).trim() === '') ? null : Number(raw);
-    if (value !== null && (!Number.isFinite(value) || value < 0)) {
-      return res.status(400).json({ error: 'Cartons/Packets must be a non-negative number.' });
-    }
-    const rows = await sql`SELECT id, cartons_packets FROM jobs WHERE id = ${id} AND deleted_at IS NULL`;
-    if (!rows.length) return res.status(404).json({ error: 'Job not found' });
-    const updated = await sql`
-      UPDATE jobs SET cartons_packets = ${value}
-       WHERE id = ${id}
-       RETURNING *
-    `;
-    await logAudit(sql, req, {
-      action: 'job.cartons_packets.update',
-      entityType: 'job',
-      entityId: id,
-      summary: `Job E-${id} Cartons/Packets set to ${value === null ? '— (station figure)' : value}`,
-      metadata: { cartons_packets: value, prior: rows[0].cartons_packets },
-    });
-    res.json(updated[0]);
-  } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
-});
 
-// ── Product Rate table (Supreme Art Finance only) ────────────────
-// Hamza's own list of product → default rate. A job whose rate hasn't
-// been set yet suggests the matching product's rate (by job name, case-
-// insensitive) — see the client's productRateFor(). Editing a product's
-// rate here never touches a job that's already been priced.
-app.get('/api/product-rates', requireAuth, async (req, res) => {
-  try {
-    await dbReady;
-    const sql = getDb();
-    const rows = await sql`SELECT * FROM finance.product_rates ORDER BY product ASC`;
-    res.json(rows);
-  } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
-});
-app.post('/api/product-rates', requireDeliveryWriter, async (req, res) => {
-  try {
-    await dbReady;
-    const sql = getDb();
-    const product = String(req.body?.product ?? '').trim();
-    const rate = Number(req.body?.rate);
-    if (!product) return res.status(400).json({ error: 'Product name is required.' });
-    if (!Number.isFinite(rate) || rate < 0) return res.status(400).json({ error: 'Rate must be a non-negative number.' });
-    const existing = await sql`SELECT id FROM finance.product_rates WHERE lower(product) = lower(${product})`;
-    if (existing.length) return res.status(409).json({ error: `"${product}" already has a rate — edit it instead of adding a duplicate.` });
-    const inserted = await sql`
-      INSERT INTO finance.product_rates (product, rate, updated_by, updated_at)
-      VALUES (${product}, ${rate}, ${req.user.email}, NOW())
-      RETURNING *
-    `;
-    await logAudit(sql, req, {
-      action: 'product_rate.create', entityType: 'product_rate', entityId: inserted[0].id,
-      summary: `Product Rate added: "${product}" = ${rate}`,
-    });
-    res.json(inserted[0]);
-  } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
-});
-app.put('/api/product-rates/:id', requireDeliveryWriter, async (req, res) => {
-  try {
-    await dbReady;
-    const sql = getDb();
-    const id = parseInt(req.params.id, 10);
-    const product = String(req.body?.product ?? '').trim();
-    const rate = Number(req.body?.rate);
-    if (!product) return res.status(400).json({ error: 'Product name is required.' });
-    if (!Number.isFinite(rate) || rate < 0) return res.status(400).json({ error: 'Rate must be a non-negative number.' });
-    const dupe = await sql`SELECT id FROM finance.product_rates WHERE lower(product) = lower(${product}) AND id != ${id}`;
-    if (dupe.length) return res.status(409).json({ error: `"${product}" already has a rate on a different row.` });
-    const updated = await sql`
-      UPDATE finance.product_rates
-         SET product = ${product}, rate = ${rate}, updated_by = ${req.user.email}, updated_at = NOW()
-       WHERE id = ${id}
-       RETURNING *
-    `;
-    if (!updated.length) return res.status(404).json({ error: 'Product Rate row not found' });
-    await logAudit(sql, req, {
-      action: 'product_rate.update', entityType: 'product_rate', entityId: id,
-      summary: `Product Rate updated: "${product}" = ${rate}`,
-    });
-    res.json(updated[0]);
-  } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
-});
-app.delete('/api/product-rates/:id', requireDeliveryWriter, async (req, res) => {
-  try {
-    await dbReady;
-    const sql = getDb();
-    const id = parseInt(req.params.id, 10);
-    const deleted = await sql`DELETE FROM finance.product_rates WHERE id = ${id} RETURNING *`;
-    if (!deleted.length) return res.status(404).json({ error: 'Product Rate row not found' });
-    await logAudit(sql, req, {
-      action: 'product_rate.delete', entityType: 'product_rate', entityId: id,
-      summary: `Product Rate removed: "${deleted[0].product}"`,
-    });
-    res.json({ ok: true });
-  } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
-});
 
-// ── Product Aliases (Supreme Art Finance only) ────────────────────
-// Folds a differently-named job into an existing product tile (the
-// Product Rate tab's "+" button). `alias` is a normalized product name
-// (what its own jobs would otherwise group under); `canonical` is the
-// target tile's display name. buildProductGroups() and productRateFor()
-// on the client both resolve through this table first.
-app.get('/api/product-aliases', requireAuth, async (req, res) => {
-  try {
-    await dbReady;
-    const sql = getDb();
-    const rows = await sql`SELECT * FROM finance.product_aliases ORDER BY alias ASC`;
-    res.json(rows);
-  } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
-});
-app.post('/api/product-aliases', requireDeliveryWriter, async (req, res) => {
-  try {
-    await dbReady;
-    const sql = getDb();
-    const alias     = String(req.body?.alias     ?? '').trim().toLowerCase();
-    const canonical = String(req.body?.canonical ?? '').trim();
-    if (!alias)     return res.status(400).json({ error: 'Alias product name is required.' });
-    if (!canonical) return res.status(400).json({ error: 'Target product name is required.' });
-    if (alias === canonical.trim().toLowerCase()) {
-      return res.status(400).json({ error: 'A product cannot alias itself.' });
-    }
-    const inserted = await sql`
-      INSERT INTO finance.product_aliases (alias, canonical, updated_by, updated_at)
-      VALUES (${alias}, ${canonical}, ${req.user.email}, NOW())
-      ON CONFLICT (alias) DO UPDATE SET canonical = EXCLUDED.canonical, updated_by = EXCLUDED.updated_by, updated_at = NOW()
-      RETURNING *
-    `;
-    await logAudit(sql, req, {
-      action: 'product_alias.create', entityType: 'product_alias', entityId: alias,
-      summary: `Product Alias added: "${alias}" now folds into "${canonical}"`,
-    });
-    res.json(inserted[0]);
-  } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
-});
-app.delete('/api/product-aliases/:alias', requireDeliveryWriter, async (req, res) => {
-  try {
-    await dbReady;
-    const sql = getDb();
-    const alias = String(req.params.alias || '').trim().toLowerCase();
-    const deleted = await sql`DELETE FROM finance.product_aliases WHERE alias = ${alias} RETURNING *`;
-    if (!deleted.length) return res.status(404).json({ error: 'Product Alias not found' });
-    await logAudit(sql, req, {
-      action: 'product_alias.delete', entityType: 'product_alias', entityId: alias,
-      summary: `Product Alias removed: "${alias}" no longer folds into "${deleted[0].canonical}"`,
-    });
-    res.json({ ok: true });
-  } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
-});
 
-// ── Company Settings (Supreme Art Finance only) ───────────────────
-// NTN and Destination per company, matched against jobs.client on the
-// job card (companyInfoLine on the client) — same shape as Product Rate.
-app.get('/api/company-settings', requireAuth, async (req, res) => {
-  try {
-    await dbReady;
-    const sql = getDb();
-    const rows = await sql`SELECT * FROM finance.company_settings ORDER BY company ASC`;
-    res.json(rows);
-  } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
-});
-app.post('/api/company-settings', requireDeliveryWriter, async (req, res) => {
-  try {
-    await dbReady;
-    const sql = getDb();
-    const company = String(req.body?.company ?? '').trim();
-    const ntn = String(req.body?.ntn ?? '').trim() || null;
-    const destination = String(req.body?.destination ?? '').trim() || null;
-    if (!company) return res.status(400).json({ error: 'Company name is required.' });
-    const existing = await sql`SELECT id FROM finance.company_settings WHERE lower(company) = lower(${company})`;
-    if (existing.length) return res.status(409).json({ error: `"${company}" already has settings — edit it instead of adding a duplicate.` });
-    const inserted = await sql`
-      INSERT INTO finance.company_settings (company, ntn, destination, updated_by, updated_at)
-      VALUES (${company}, ${ntn}, ${destination}, ${req.user.email}, NOW())
-      RETURNING *
-    `;
-    await logAudit(sql, req, {
-      action: 'company_settings.create', entityType: 'company_settings', entityId: inserted[0].id,
-      summary: `Company Settings added: "${company}"`,
-    });
-    res.json(inserted[0]);
-  } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
-});
-app.put('/api/company-settings/:id', requireDeliveryWriter, async (req, res) => {
-  try {
-    await dbReady;
-    const sql = getDb();
-    const id = parseInt(req.params.id, 10);
-    const company = String(req.body?.company ?? '').trim();
-    const ntn = String(req.body?.ntn ?? '').trim() || null;
-    const destination = String(req.body?.destination ?? '').trim() || null;
-    if (!company) return res.status(400).json({ error: 'Company name is required.' });
-    const dupe = await sql`SELECT id FROM finance.company_settings WHERE lower(company) = lower(${company}) AND id != ${id}`;
-    if (dupe.length) return res.status(409).json({ error: `"${company}" already has settings on a different row.` });
-    const updated = await sql`
-      UPDATE finance.company_settings
-         SET company = ${company}, ntn = ${ntn}, destination = ${destination}, updated_by = ${req.user.email}, updated_at = NOW()
-       WHERE id = ${id}
-       RETURNING *
-    `;
-    if (!updated.length) return res.status(404).json({ error: 'Company Settings row not found' });
-    await logAudit(sql, req, {
-      action: 'company_settings.update', entityType: 'company_settings', entityId: id,
-      summary: `Company Settings updated: "${company}"`,
-    });
-    res.json(updated[0]);
-  } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
-});
-app.delete('/api/company-settings/:id', requireDeliveryWriter, async (req, res) => {
-  try {
-    await dbReady;
-    const sql = getDb();
-    const id = parseInt(req.params.id, 10);
-    const deleted = await sql`DELETE FROM finance.company_settings WHERE id = ${id} RETURNING *`;
-    if (!deleted.length) return res.status(404).json({ error: 'Company Settings row not found' });
-    await logAudit(sql, req, {
-      action: 'company_settings.delete', entityType: 'company_settings', entityId: id,
-      summary: `Company Settings removed: "${deleted[0].company}"`,
-    });
-    res.json({ ok: true });
-  } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
-});
 
 // ── Stock Groups entity (v2026-08-18) ──────────────────────────
 // First-class group record with its OWN client / product / specs /
@@ -7318,232 +6700,8 @@ app.post('/api/stock-groups/:id/duplicate-into-job', requireJobsWriter, async (r
   } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
 });
 
-// Joint delivery — ONE challan number stamped across both linked jobs.
-// Each job ships its OWN cartons figure (no auto-splitting: the store
-// keeper/QC already know each job's own ready quantity). Runs the exact
-// same per-job eligibility + auto-advance logic as a normal delivery,
-// just twice, wrapped in one response so the UI can show one confirmation.
-// Payload: { challan_no, date, entries: [{ job_id, cartons, po_no, batch_no }, ...] }
-app.post('/api/jobs/:id/deliver-linked', requireDeliveryWriter, async (req, res) => {
-  try {
-    await dbReady;
-    const sql = getDb();
-    const id = parseInt(req.params.id, 10);
-    const challanNo = String(req.body?.challan_no ?? '').trim() || null;
-    const date = String(req.body?.date ?? '').trim() || businessDateISO();
-    const entriesIn = Array.isArray(req.body?.entries) ? req.body.entries : [];
-    if (entriesIn.length !== 2) {
-      return res.status(400).json({ error: 'Linked delivery needs exactly 2 job entries.' });
-    }
-    const rows = await sql`SELECT * FROM jobs WHERE id = ANY(${entriesIn.map(e => parseInt(e.job_id, 10))}) AND deleted_at IS NULL`;
-    const jobsById = new Map(rows.map(r => [r.id, r]));
-    const jobA = jobsById.get(id);
-    if (!jobA) return res.status(404).json({ error: 'Job not found' });
-    if (!jobA.linked_job_id) return res.status(400).json({ error: `Job E-${id} is not linked to another job.` });
-    const partnerId = jobA.linked_job_id;
-    const jobB = jobsById.get(partnerId);
-    if (!jobB) return res.status(404).json({ error: 'Linked partner job not found' });
-    if (jobB.linked_job_id !== id) return res.status(400).json({ error: 'Link is inconsistent — unlink and relink these jobs.' });
-    // Match each payload entry to its job by id.
-    const entryFor = (jobId) => entriesIn.find(e => parseInt(e.job_id, 10) === jobId);
-    const eA = entryFor(id);
-    const eB = entryFor(partnerId);
-    if (!eA || !eB) return res.status(400).json({ error: 'Both linked jobs need a cartons entry.' });
-    const cartonsA = parseFloat(String(eA.cartons ?? '').replace(/[^0-9.\-]/g, ''));
-    const cartonsB = parseFloat(String(eB.cartons ?? '').replace(/[^0-9.\-]/g, ''));
-    if (!Number.isFinite(cartonsA) || cartonsA <= 0) return res.status(400).json({ error: `Job E-${id}: cartons must be a positive number.` });
-    if (!Number.isFinite(cartonsB) || cartonsB <= 0) return res.status(400).json({ error: `Job E-${partnerId}: cartons must be a positive number.` });
-    const errA = deliveryEligibilityError(jobA);
-    if (errA) return res.status(400).json({ error: errA });
-    const errB = deliveryEligibilityError(jobB);
-    if (errB) return res.status(400).json({ error: errB });
 
-    const byEmail = req.user?.email;
-    const updA = computeDeliveryUpdate(jobA, {
-      cartonsN: cartonsA, date, notes: challanNo,
-      poNo: String(eA.po_no ?? '').trim() || null,
-      batchNo: String(eA.batch_no ?? '').trim() || null,
-      fbrNo: String(eA.fbr_no ?? '').trim() || null,
-      linkedJobId: partnerId, byEmail,
-    });
-    const updB = computeDeliveryUpdate(jobB, {
-      cartonsN: cartonsB, date, notes: challanNo,
-      poNo: String(eB.po_no ?? '').trim() || null,
-      batchNo: String(eB.batch_no ?? '').trim() || null,
-      fbrNo: String(eB.fbr_no ?? '').trim() || null,
-      linkedJobId: id, byEmail,
-    });
-    const [rowA] = await sql`
-      UPDATE jobs SET deliveries=${JSON.stringify(updA.deliveries)}, delqty=${updA.delqty},
-             stage_index=${updA.stage_index}, stages=${JSON.stringify(updA.stages)}, log=${JSON.stringify(updA.log)}
-       WHERE id=${id} RETURNING *`;
-    const [rowB] = await sql`
-      UPDATE jobs SET deliveries=${JSON.stringify(updB.deliveries)}, delqty=${updB.delqty},
-             stage_index=${updB.stage_index}, stages=${JSON.stringify(updB.stages)}, log=${JSON.stringify(updB.log)}
-       WHERE id=${partnerId} RETURNING *`;
-    await logAudit(sql, req, {
-      action: 'job.delivery.add_linked',
-      entityType: 'job',
-      entityId: id,
-      summary: `Joint delivery (Challan ${challanNo || '—'}): E-${id} ${cartonsA.toLocaleString()} cartons + E-${partnerId} ${cartonsB.toLocaleString()} cartons`,
-      metadata: { challan_no: challanNo, date, a: { job_id: id, cartons: cartonsA }, b: { job_id: partnerId, cartons: cartonsB } },
-    });
-    res.json({ job: rowA, partner: rowB });
-  } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
-});
 
-// DELETE a specific delivery entry by index — admin only, for corrections.
-// If removing the last entry drops the job below full delivery, moves stage
-// back from Delivered (7) to Ready to Deliver (6).
-app.delete('/api/jobs/:id/deliveries/:index', requirePermission('delivery_delete'), async (req, res) => {
-  try {
-    await dbReady;
-    const sql = getDb();
-    const id  = parseInt(req.params.id, 10);
-    const ix  = parseInt(req.params.index, 10);
-    const rows = await sql`SELECT * FROM jobs WHERE id=${id} AND deleted_at IS NULL`;
-    if (!rows.length) return res.status(404).json({ error: 'Job not found' });
-    const job = rows[0];
-    const list = Array.isArray(job.deliveries) ? [...job.deliveries] : [];
-    if (ix < 0 || ix >= list.length) return res.status(400).json({ error: 'Delivery index out of range' });
-    const removed = list.splice(ix, 1)[0] || null;
-    const totalCartons = sumDeliveryCartons(list);
-    const bookedQty    = parseFloat(String(job.qty || '').replace(/[^0-9.\-]/g, '')) || 0;
-    const nowIso = new Date().toISOString();
-    const time   = businessStamp();
-    const by     = req.user?.email || 'unknown';
-    let stage_index = job.stage_index || 0;
-    let stages = (job.stages && typeof job.stages === 'object') ? { ...job.stages } : {};
-    let log = Array.isArray(job.log) ? [...job.log] : [];
-    // If a corrected removal drops the running total below the booked qty
-    // AND the job was Delivered, walk it back to Ready to Deliver so the
-    // remaining balance shows in the queue again. With no booked qty set
-    // (bookedQty falsy — routine for shade cards, which never carry one)
-    // there's no target to compare against, so instead revert whenever
-    // nothing is left delivered at all — mirrors how such a job was
-    // advanced to Delivered in the first place (see computeDeliveryUpdate).
-    const shouldRevert = bookedQty ? totalCartons < bookedQty : totalCartons <= 0;
-    if (stage_index === 7 && shouldRevert) {
-      stages[7] = { ...(stages[7] || {}), status: 'active' };
-      stages[6] = { ...(stages[6] || {}), status: 'active', by, time, at: nowIso };
-      delete stages[7];
-      stage_index = 6;
-    }
-    log.push({ stage: STAGES[stage_index], status: stages[stage_index]?.status || 'active',
-      notes: `Delivery entry removed (was ${(removed && removed.cartons) || '?'} cartons on ${(removed && removed.date) || '?'})`,
-      by: `${by} (${STAGES[stage_index] || '?'})`, time });
-    const updated = await sql`
-      UPDATE jobs
-         SET deliveries  = ${JSON.stringify(list)},
-             delqty      = ${totalCartons ? String(totalCartons) : null},
-             stage_index = ${stage_index},
-             stages      = ${JSON.stringify(stages)},
-             log         = ${JSON.stringify(log)}
-       WHERE id = ${id}
-       RETURNING *
-    `;
-    await logAudit(sql, req, {
-      action: 'job.delivery.remove',
-      entityType: 'job',
-      entityId: id,
-      summary: `Removed delivery entry #${ix + 1} from Job E-${id}`,
-      metadata: { removed, remaining_total: totalCartons },
-    });
-    res.json(updated[0]);
-  } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
-});
-
-// Edit one already-recorded delivery entry's reference fields — PO No.,
-// Batch No., E-FBR No., Invoice No., MSI No. — or, per Hamza's follow-up
-// request, the cartons figure itself. Editing cartons re-runs the same
-// delqty/stage-completion recompute computeDeliveryUpdate does on create
-// (and the DELETE route does on removal), since the entry's own cartons
-// value is what those derive from. Used by both the job card's Deliveries
-// ledger (inline-editable) and the Sale Report table.
-app.patch('/api/jobs/:id/deliveries/:index', requireDeliveryWriter, async (req, res) => {
-  try {
-    await dbReady;
-    const sql = getDb();
-    const id = parseInt(req.params.id, 10);
-    const ix = parseInt(req.params.index, 10);
-    const rows = await sql`SELECT * FROM jobs WHERE id=${id} AND deleted_at IS NULL`;
-    if (!rows.length) return res.status(404).json({ error: 'Job not found' });
-    const job = rows[0];
-    const list = Array.isArray(job.deliveries) ? [...job.deliveries] : [];
-    if (ix < 0 || ix >= list.length) return res.status(400).json({ error: 'Delivery index out of range' });
-    const FIELDS = { po_no: 'po_no', batch_no: 'batch_no', fbr_no: 'fbr_no', notes: 'notes', msi_no: 'msi_no', cartons: 'cartons' };
-    const field = FIELDS[req.body?.field];
-    if (!field) return res.status(400).json({ error: 'field must be one of: po_no, batch_no, fbr_no, notes, msi_no, cartons' });
-    const before = list[ix];
-
-    if (field === 'cartons') {
-      const cartonsN = parseFloat(String(req.body?.value ?? '').replace(/[^0-9.\-]/g, ''));
-      if (!Number.isFinite(cartonsN) || cartonsN <= 0) {
-        return res.status(400).json({ error: 'Cartons must be a positive number.' });
-      }
-      list[ix] = { ...before, cartons: String(cartonsN) };
-      const totalCartons = sumDeliveryCartons(list);
-      const bookedQty = parseFloat(String(job.qty || '').replace(/[^0-9.\-]/g, '')) || 0;
-      const nowIso = new Date().toISOString();
-      const time   = businessStamp();
-      const by     = req.user?.email || 'unknown';
-      let stage_index = job.stage_index || 0;
-      let stages = (job.stages && typeof job.stages === 'object') ? { ...job.stages } : {};
-      let log = Array.isArray(job.log) ? [...job.log] : [];
-      // Same forward/back rules as computeDeliveryUpdate (create) and the
-      // DELETE route (remove) — an edit can cross the completion threshold
-      // in either direction, so both are handled here.
-      const deliveryComplete = bookedQty ? totalCartons >= bookedQty : totalCartons > 0;
-      if (deliveryComplete && stage_index < 7) {
-        stages[6] = { ...(stages[6] || {}), status: 'done', by, time, at: nowIso };
-        stages[7] = { status: 'done', notes: '', by, time, at: nowIso };
-        stage_index = 7;
-      } else if (!deliveryComplete && stage_index === 7) {
-        stages[7] = { ...(stages[7] || {}), status: 'active' };
-        stages[6] = { ...(stages[6] || {}), status: 'active', by, time, at: nowIso };
-        delete stages[7];
-        stage_index = 6;
-      }
-      log.push({ stage: STAGES[stage_index], status: stages[stage_index]?.status || 'active',
-        notes: `Delivery entry #${ix + 1} cartons edited: ${before.cartons || '0'} → ${cartonsN}`,
-        by: `${by} (${STAGES[stage_index] || '?'})`, time });
-      const updated = await sql`
-        UPDATE jobs
-           SET deliveries  = ${JSON.stringify(list)},
-               delqty      = ${totalCartons ? String(totalCartons) : null},
-               stage_index = ${stage_index},
-               stages      = ${JSON.stringify(stages)},
-               log         = ${JSON.stringify(log)}
-         WHERE id = ${id}
-         RETURNING *
-      `;
-      await logAudit(sql, req, {
-        action: 'job.delivery.edit',
-        entityType: 'job',
-        entityId: id,
-        summary: `Job E-${id} delivery #${ix + 1}: cartons "${before.cartons || ''}" → "${cartonsN}"`,
-        metadata: { index: ix, field: 'cartons', before: before.cartons || null, after: String(cartonsN) },
-      });
-      return res.json(updated[0]);
-    }
-
-    const value = String(req.body?.value ?? '').trim() || null;
-    list[ix] = { ...before, [field]: value };
-    const updated = await sql`
-      UPDATE jobs SET deliveries = ${JSON.stringify(list)}
-       WHERE id = ${id}
-       RETURNING *
-    `;
-    await logAudit(sql, req, {
-      action: 'job.delivery.edit',
-      entityType: 'job',
-      entityId: id,
-      summary: `Job E-${id} delivery #${ix + 1}: ${field} "${before[field] || ''}" → "${value || ''}"`,
-      metadata: { index: ix, field, before: before[field] || null, after: value },
-    });
-    res.json(updated[0]);
-  } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
-});
 
 // Delete one saved particulars entry (a station "pass") from a job.
 // The station view surfaces a "−" on each saved pass so a mis-entered
