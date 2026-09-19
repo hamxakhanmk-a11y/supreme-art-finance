@@ -15113,33 +15113,6 @@ async function bulkDeleteSelectedFinalizedJobs() {
 let _adjModalTxMatches = [];
 let _adjSourceMode = 'job';
 let _adjSelectedSources = new Set();
-// "Manual" sources view: sheets the user typed against each source (source index -> sheets).
-let _adjManualSheets = {};
-function adjManualPs(i) { const m = _adjModalTxMatches[i]; return packetSize((m && m.paperType) || '') || 1; }
-function adjManualTotal() { return Object.values(_adjManualSheets).reduce((a, v) => a + (+v || 0), 0); }
-// Called as the user types in a source's Packets or Sheets box: keeps the two in step, caps the amount at what
-// that source still has, and refreshes the running total (without re-rendering, so typing isn't interrupted).
-function adjManualInput(i, field, value) {
-  const m = _adjModalTxMatches[i]; if (!m) return;
-  const ps = adjManualPs(i);
-  let sheets = field === 'packets' ? Math.round((parseFloat(value) || 0) * ps) : Math.round(parseFloat(value) || 0);
-  const capped = sheets > m.remaining;
-  sheets = Math.max(0, Math.min(sheets, m.remaining));
-  if (sheets > 0) _adjManualSheets[i] = sheets; else delete _adjManualSheets[i];
-  const pk = document.getElementById('adj-man-pk-' + i), sh = document.getElementById('adj-man-sh-' + i);
-  if (pk && (field !== 'packets' || capped)) pk.value = sheets ? +(sheets / ps).toFixed(2) : '';
-  if (sh && (field !== 'sheets' || capped)) sh.value = sheets || '';
-  adjRefreshManualTotal();
-}
-function adjRefreshManualTotal() {
-  const el = document.getElementById('adj-manual-total'); if (!el) return;
-  const want = Math.round(parseFloat((document.getElementById('adj-sheets') || {}).value) || 0);
-  const got = adjManualTotal();
-  const diff = want - got;
-  el.style.color = (got === want && want > 0) ? '#166534' : '#b91c1c';
-  el.innerHTML = 'Typed: <b>' + got.toLocaleString() + '</b> of <b>' + want.toLocaleString() + '</b> sheets' +
-    (got === want && want > 0 ? ' \u2014 matches' : (diff > 0 ? ' \u2014 ' + diff.toLocaleString() + ' still to assign' : ' \u2014 over by ' + (-diff).toLocaleString()));
-}
 
 function adjConsumptionGroups() {
   const groups = new Map();
@@ -15242,26 +15215,6 @@ function renderAdjustSources() {
     button.style.color = active ? '#166534' : 'var(--text2)';
     button.style.borderColor = active ? '#22c55e' : 'var(--border)';
   });
-  const note = document.getElementById('adj-sources-note');
-  if (note) note.textContent = _adjSourceMode === 'manual'
-    ? 'Type how many packets or sheets to take from each job card. Together they must equal the quantity entered above.'
-    : 'Select sources for the total quantity entered above. Save Adjustment applies that quantity across the selected sources.';
-  if (_adjSourceMode === 'manual') {
-    list.innerHTML = '<div id="adj-manual-total" style="font-size:12px;font-weight:700;margin-bottom:8px;"></div>' + (_adjModalTxMatches.map((m, i) => {
-      const ps = adjManualPs(i);
-      const typed = _adjManualSheets[i] || 0;
-      const pkts = m.remaining / ps;
-      const paper = esc(m.paperType || '') + ' ' + esc(m.size || '') + '/' + esc(String(m.gsm || ''));
-      return '<div style="display:flex;align-items:center;gap:8px;font-size:12px;padding:8px 9px;border:1px solid ' + (typed ? '#22c55e' : 'var(--border)') + ';border-radius:8px;margin-bottom:6px;">' +
-        '<div style="flex:1;min-width:0;"><strong>' + esc(m.mcNo) + '</strong> ' + paper + '<br><span style="color:var(--text2);">' + m.remaining.toLocaleString() + ' sheets available (' + fmtPkts(pkts, {keepZero:true}) + ' ' + esc(packetUnitLabel(m.paperType || '').toLowerCase()) + ')</span></div>' +
-        '<input type="number" id="adj-man-pk-' + i + '" class="filter" min="0" step="0.5" placeholder="Packets" value="' + (typed ? +(typed / ps).toFixed(2) : '') + '" oninput="adjManualInput(' + i + ',\'packets\',this.value)" style="width:78px;">' +
-        '<input type="number" id="adj-man-sh-' + i + '" class="filter" min="0" step="1" placeholder="Sheets" value="' + (typed || '') + '" oninput="adjManualInput(' + i + ',\'sheets\',this.value)" style="width:84px;">' +
-      '</div>';
-    }).join('') || '<div style="font-size:12px;color:var(--text2);">No unallocated manual consumption available.</div>');
-    adjRefreshManualTotal();
-    list.scrollTop = scrollTop;
-    return;
-  }
   const rows = _adjSourceMode === 'consumption'
     ? adjConsumptionGroups()
     : _adjModalTxMatches.map((m, i) => ({ ...m, indices: [i] }));
@@ -15300,7 +15253,6 @@ async function openAdjustModal(jobId) {
   _adjModalTxMatches = [];
   _adjSourceMode = 'job';
   _adjSelectedSources = new Set();
-  _adjManualSheets = {};
   try {
     const txs = await api('GET', '/api/wastage-adjustment/unallocated');
     const allocMap = await api('GET', '/api/wastage-adjustment/allocations').catch(() => ({}));
@@ -15406,10 +15358,9 @@ function buildAdjustSidePanel(j, s, ps, matchHtml) {
         <div style="display:flex;gap:8px;margin-bottom:10px;" role="group" aria-label="Consumption source view">
           <button type="button" class="btn btn-sm" data-adj-mode="job" onclick="setAdjustSourceMode('job')">By Job</button>
           <button type="button" class="btn btn-sm" data-adj-mode="consumption" onclick="setAdjustSourceMode('consumption')">By Consumption</button>
-          <button type="button" class="btn btn-sm" data-adj-mode="manual" onclick="setAdjustSourceMode('manual')">Manual</button>
         </div>
         <div class="dash-flbl" style="margin-bottom:8px;">Manual Consumption Sources</div>
-        <div id="adj-sources-note" style="font-size:11px;color:var(--text2);margin-bottom:8px;">Select sources for the total quantity entered above. Save Adjustment applies that quantity across the selected sources.</div>
+        <div style="font-size:11px;color:var(--text2);margin-bottom:8px;">Select sources for the total quantity entered above. Save Adjustment applies that quantity across the selected sources.</div>
         <div id="adj-alloc-list" style="max-height:180px;overflow-y:auto;">${matchHtml}</div>
       </div>
       <button class="btn btn-primary" style="width:100%;" onclick="submitAdjustment(${j.id})">Save Adjustment</button>
@@ -15497,7 +15448,6 @@ function adjPacketsChanged(jobId) {
   const packets = parseFloat(packetsEl.value) || 0;
   sheetsEl.value = Math.round(packets * ps);
   adjSplitChanged(jobId);
-  adjRefreshManualTotal();
 }
 
 function adjSheetsChanged(jobId) {
@@ -15513,7 +15463,6 @@ function adjSheetsChanged(jobId) {
   const sheets = parseFloat(sheetsEl.value) || 0;
   packetsEl.value = ps ? +(sheets / ps).toFixed(2) : 0;
   adjSplitChanged(jobId);
-  adjRefreshManualTotal();
 }
 
 async function submitAdjustment(jobId) {
@@ -15536,31 +15485,16 @@ async function submitAdjustment(jobId) {
 
   const allocations = [];
   let sheetsLeft = manual_sheets;
-  if (_adjSourceMode === 'manual') {
-    // Manual view: exactly what was typed against each job card, and it has to add up to the adjustment.
-    const typed = Object.entries(_adjManualSheets).map(([i, v]) => [+i, +v]).filter(([, v]) => v > 0).sort((a, b) => a[0] - b[0]);
-    const total = typed.reduce((a, [, v]) => a + v, 0);
-    if (typed.length && total !== manual_sheets) {
-      notify('The sources you typed total ' + total.toLocaleString() + ' sheets, but the adjustment is ' + manual_sheets.toLocaleString() + ' sheets.');
-      return;
-    }
-    for (const [i, v] of typed) {
-      const m = _adjModalTxMatches[i];
-      if (m) allocations.push({ transaction_id: m.id, sheets_allocated: Math.min(v, m.remaining) });
-    }
-    sheetsLeft = 0;
-  } else {
-    for (const idx of [..._adjSelectedSources].sort((a, b) => a - b)) {
-      const m = _adjModalTxMatches[idx];
-      if (!m || sheetsLeft <= 0) continue;
-      const take = Math.min(m.remaining, sheetsLeft);
-      allocations.push({ transaction_id: m.id, sheets_allocated: take });
-      sheetsLeft -= take;
-    }
+  for (const idx of [..._adjSelectedSources].sort((a, b) => a - b)) {
+    const m = _adjModalTxMatches[idx];
+    if (!m || sheetsLeft <= 0) continue;
+    const take = Math.min(m.remaining, sheetsLeft);
+    allocations.push({ transaction_id: m.id, sheets_allocated: take });
+    sheetsLeft -= take;
   }
 
   if (!allocations.length) {
-    notify(_adjSourceMode === 'manual' ? 'Type the packets or sheets for at least one job card.' : 'Select at least one manual consumption source.');
+    notify('Select at least one manual consumption source.');
     return;
   }
 
