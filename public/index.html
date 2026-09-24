@@ -15284,6 +15284,10 @@ function adjSplitPcts() {
   return { printing_pct: read('printing'), die_pct: read('die'), coating_pct: read('coating'), pasting_pct: read('pasting'), sorting_pct: read('sorting'), embellish_pct: read('embellish') };
 }
 function adjSplitTotal(p) { return p.printing_pct + p.die_pct + p.coating_pct + p.pasting_pct + p.sorting_pct + (p.embellish_pct || 0); }
+// Exactly 100, give or take float noise. Deliberately NOT Math.round() —
+// that accepted anything from 99.5 to 100.5, so a split adding to 99.9
+// reported "Total 100%" and saved a tenth of a percent short.
+function splitTotalsOneHundred(p) { return Math.abs(adjSplitTotal(p) - 100) <= 0.01; }
 // Live feedback under each manual field: what that percentage actually
 // works out to for THIS job, in the unit that row is measured in (sheets
 // for printing/coating/die, cartons for sorting/pasting).
@@ -15304,10 +15308,12 @@ function adjSplitChanged(jobId) {
   }
   const warn = document.getElementById('adj-split-warn');
   if (warn) {
-    const total = Math.round(adjSplitTotal(pcts));
-    const ok = total === 100;
+    // Shows the REAL total, not a rounded one — rounding was reporting
+    // "Total 100%" for a split that actually came to 99.9%.
+    const total = adjSplitTotal(pcts);
+    const ok = splitTotalsOneHundred(pcts);
     warn.style.color = ok ? 'var(--text2)' : '#dc2626';
-    warn.textContent = ok ? 'Total 100%' : `Total ${total}% — must be 100%.`;
+    warn.textContent = ok ? 'Total 100%' : `Total ${+total.toFixed(2)}% — must be 100%.`;
   }
   updateAdjustPreview(jobId);
 }
@@ -15622,8 +15628,8 @@ async function submitAdjustment(jobId) {
   const s = _wastageAdjSettings;
   const pcts = adjSplitPcts();
   const { printing_pct, die_pct, coating_pct, pasting_pct, sorting_pct, embellish_pct } = pcts;
-  if (Math.round(adjSplitTotal(pcts)) !== 100) {
-    notify(`Wastage split totals ${Math.round(adjSplitTotal(pcts))}% — it must be 100%.`);
+  if (!splitTotalsOneHundred(pcts)) {
+    notify(`Wastage split totals ${+adjSplitTotal(pcts).toFixed(2)}% — it must be 100%.`);
     return;
   }
   if (packets <= 0 || manual_sheets <= 0) { notify('Enter a valid number of packets/sheets.'); return; }
@@ -19327,6 +19333,10 @@ const WASTAGE_ADJ_ROW_UNIT = Object.fromEntries(Object.values(WASTAGE_ADJ_ROW_MA
 // The production-quantity rows the adjustment cascades through, in card
 // order, with the unit each is measured in. Purple previews are written
 // against these the same way the waste rows already are.
+// Ready to Delivery Qty is deliberately NOT here. What actually shipped is
+// a fact — the cartons left the building — so the adjustment never restates
+// it; the extra wastage is absorbed by the stages above instead. The chain
+// therefore ends at Pasted Cartons Qty.
 const WASTAGE_ADJ_QTY_UNIT = {
   printed_sheets_qty:     'sheets',
   coating_sheets_qty:     'sheets',
@@ -19334,7 +19344,6 @@ const WASTAGE_ADJ_QTY_UNIT = {
   die_cutting_sheets:     'sheets',
   sorted_cartons_qty:     'cartons',
   pasted_cartons_qty:     'cartons',
-  delivered_cartons_qty:  'cartons',
 };
 
 // Numeric total already recorded on one particulars row — entries[] summed
@@ -19364,7 +19373,8 @@ function particularsRowTotal(job, key) {
 //   die      = (emboss or coating) − that stage's waste
 //   sorted   = (die − die waste) × Ups
 //   pasted   = sorted   − sorting waste
-//   ready    = pasted   − pasting waste
+//
+// Ready to Delivery Qty is left alone — what shipped already shipped.
 //
 // Returns {} when the job has no recorded printed sheets — there's nothing
 // to cascade from, so no purple quantity previews are shown at all.
@@ -19384,7 +19394,8 @@ function computeWastageAdjQtyChain(job, manualSheets, wasteOverlay, ups) {
   const sheetsIntoSorting = out.die_cutting_sheets - w('die_cutting_waste');
   out.sorted_cartons_qty = Math.round(sheetsIntoSorting * (ups || 0));
   out.pasted_cartons_qty = out.sorted_cartons_qty - w('sorted_cartons_waste');
-  out.delivered_cartons_qty = out.pasted_cartons_qty - w('pasting_waste_qty');
+  // Stops here on purpose — Ready to Delivery Qty keeps whatever actually
+  // shipped (see WASTAGE_ADJ_QTY_UNIT).
   return out;
 }
 

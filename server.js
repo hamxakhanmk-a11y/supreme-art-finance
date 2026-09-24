@@ -9164,7 +9164,7 @@ app.put('/api/wastage-adjustment/settings', requirePermission('wastage_adjustmen
     const sql = getDb();
     const v = req.body;
     const pcts = (v.printing_pct || 0) + (v.die_pct || 0) + (v.coating_pct || 0) + (v.pasting_pct || 0) + (v.sorting_pct || 0);
-    if (Math.round(pcts) !== 100) return res.status(400).json({ error: 'Wastage percentages must sum to 100' });
+    if (Math.abs(pcts - 100) > 0.01) return res.status(400).json({ error: `Wastage percentages must sum to 100 — they total ${+pcts.toFixed(2)}%` });
     if ((v.max_packets_per_job || 0) < 0.5) return res.status(400).json({ error: 'Max packets per job must be at least 0.5' });
     await sql`
       INSERT INTO wastage_adjustment_settings (key, value) VALUES ('wastage_defaults', ${JSON.stringify(v)})
@@ -9225,7 +9225,7 @@ app.post('/api/wastage-adjustment/adjust/:jobId', requirePermission('wastage_adj
     // like any other stage.
     const embellishPct = b.embellish_pct || 0;
     const pcts = (b.printing_pct || 0) + (b.die_pct || 0) + (b.coating_pct || 0) + (b.pasting_pct || 0) + (b.sorting_pct || 0) + embellishPct;
-    if (Math.round(pcts) !== 100) return res.status(400).json({ error: 'Wastage percentages must sum to 100' });
+    if (Math.abs(pcts - 100) > 0.01) return res.status(400).json({ error: `Wastage percentages must sum to 100 — they total ${+pcts.toFixed(2)}%` });
     if (!b.manual_packets || b.manual_packets <= 0) return res.status(400).json({ error: 'manual_packets must be > 0' });
     const row = (await sql`
       INSERT INTO job_adjustments (job_id, manual_packets, manual_sheets, printing_pct, die_pct, coating_pct, pasting_pct, sorting_pct, embellish_pct, notes, adjusted_by)
