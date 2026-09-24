@@ -15433,7 +15433,7 @@ function buildAdjustSidePanel(j, s, ps, matchHtml) {
     <div class="cv-compare-body">
       <div style="border:1px solid var(--border);border-radius:var(--radius);padding:12px;background:#fff;margin-bottom:12px;">
         <div class="dash-flbl" style="margin-bottom:8px;">Manual Packets / Sheets to Adjust</div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;">
           <div>
             <label style="font-size:11px;color:var(--text2);">Packets</label>
             <input type="number" id="adj-packets" min="0.5" max="${s.max_packets_per_job}" step="0.5" value="${initialPackets}" class="filter" style="width:100%;" oninput="adjPacketsChanged(${j.id})">
@@ -15442,8 +15442,13 @@ function buildAdjustSidePanel(j, s, ps, matchHtml) {
             <label style="font-size:11px;color:var(--text2);">Sheets</label>
             <input type="number" id="adj-sheets" min="1" step="1" value="${initialSheets}" class="filter" style="width:100%;" oninput="adjSheetsChanged(${j.id})">
           </div>
+          <div>
+            <label style="font-size:11px;color:var(--text2);" title="Wastage already on this job card: (Unit Carton Qty &minus; delivered shipment qty) &divide; Ups. Read-only — it's added to the packets above before the split.">Existing Wastage</label>
+            <div style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;box-sizing:border-box;background:#f3f4f6;color:var(--text2);font-weight:600;">${baseWastageSheets(j) > 0 ? baseWastageSheets(j).toLocaleString() : '&mdash;'}</div>
+            <div style="font-size:10px;color:var(--text2);margin-top:2px;">sheets</div>
+          </div>
         </div>
-        <div style="font-size:11px;color:var(--text2);margin-top:4px;">Max ${s.max_packets_per_job} packets per job. 1 packet = ${ps} sheets.</div>
+        <div style="font-size:11px;color:var(--text2);margin-top:4px;">Max ${s.max_packets_per_job} packets per job. 1 packet = ${ps} sheets. The split below covers Existing Wastage + the sheets entered here.</div>
       </div>
       <div style="border:1px solid var(--border);border-radius:var(--radius);padding:12px;background:#fff;margin-bottom:12px;">
         <div style="display:flex;gap:8px;margin-bottom:10px;" role="group" aria-label="Adjustment mode">
@@ -15655,8 +15660,10 @@ async function removeAdjustment(jobId) {
   } catch (e) { notify('Error: ' + e.message); }
 }
 
+// Open to whoever holds wastage_adjustment, not Super Admin alone — if a
+// role can adjust, it can set the defaults the adjustment starts from.
 async function openWastageAdjSettingsModal() {
-  if (!isSuperAdmin()) return;
+  if (!canWastageAdjust()) return;
   const s = _wastageAdjSettings;
   openModal(`<div class="modal" onclick="event.stopPropagation()" style="max-width:460px;">
     <h2 style="text-align:center;letter-spacing:1px;">WASTAGE SETTINGS</h2>
@@ -15680,7 +15687,7 @@ async function openWastageAdjSettingsModal() {
 }
 
 async function saveWastageAdjSettings() {
-  if (!isSuperAdmin()) return;
+  if (!canWastageAdjust()) return;
   const printing_pct = parseFloat(document.getElementById('as-printing').value) || 0;
   const die_pct      = parseFloat(document.getElementById('as-die').value) || 0;
   const coating_pct  = parseFloat(document.getElementById('as-coating').value) || 0;
@@ -19293,6 +19300,16 @@ const WASTAGE_ADJ_ROW_UNIT = Object.fromEntries(Object.values(WASTAGE_ADJ_ROW_MA
 // (printing_pct/die_pct/coating_pct/pasting_pct/sorting_pct), converting
 // to cartons via `ups` for the two carton-based rows. The returned value
 // per row is the row's whole new total, not a delta to add onto anything.
+// The wastage already implied by the job card itself, in sheets:
+// (Unit Carton Qty − delivered shipment qty) ÷ Ups. Shown read-only in the
+// Adjust panel so it's visible what the split is working on before any
+// manual packets are added on top.
+function baseWastageSheets(job) {
+  const ups = parseFloat(job && job.ups) || 0;
+  if (ups <= 0) return 0;
+  const cartonQty = parseFloat(job && job.cartonqty) || 0;
+  return Math.max(0, Math.round((cartonQty - totalDeliveredCartons(job)) / ups));
+}
 function computeWastageAdjSplit(job, manualSheets, pcts, ups) {
   const cartonQty  = parseFloat(job && job.cartonqty) || 0;
   const delivered  = totalDeliveredCartons(job);

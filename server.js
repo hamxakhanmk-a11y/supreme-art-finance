@@ -9143,7 +9143,7 @@ app.delete('/api/transfer-notes/:id', requireAdmin, async (req, res) => {
 
 // ── Wastage Adjustment: adjustment + finalized-jobs endpoints ────
 // Settings — read/write the global wastage defaults.
-app.get('/api/wastage-adjustment/settings', requireSuperAdmin, async (req, res) => {
+app.get('/api/wastage-adjustment/settings', requirePermission('wastage_adjustment'), async (req, res) => {
   try {
     await dbReady;
     const sql = getDb();
@@ -9152,7 +9152,7 @@ app.get('/api/wastage-adjustment/settings', requireSuperAdmin, async (req, res) 
   } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
 });
 
-app.put('/api/wastage-adjustment/settings', requireSuperAdmin, async (req, res) => {
+app.put('/api/wastage-adjustment/settings', requirePermission('wastage_adjustment'), async (req, res) => {
   try {
     await dbReady;
     const sql = getDb();
