@@ -15273,15 +15273,17 @@ let _adjSplitJobId = null;
 function adjSplitPcts() {
   if (_adjSplitMode !== 'manual') {
     const s = _wastageAdjSettings;
-    return { printing_pct: s.printing_pct, die_pct: s.die_pct, coating_pct: s.coating_pct, pasting_pct: s.pasting_pct, sorting_pct: s.sorting_pct };
+    return { printing_pct: s.printing_pct, die_pct: s.die_pct, coating_pct: s.coating_pct, pasting_pct: s.pasting_pct, sorting_pct: s.sorting_pct, embellish_pct: 0 };
   }
+  // A stage with no field on this job (Embellishment, when none is
+  // planned) reads 0 — it takes no share and the other five make the 100%.
   const read = (id) => {
     const el = document.getElementById('adj-split-' + id);
     return el ? (parseFloat(el.value) || 0) : 0;
   };
-  return { printing_pct: read('printing'), die_pct: read('die'), coating_pct: read('coating'), pasting_pct: read('pasting'), sorting_pct: read('sorting') };
+  return { printing_pct: read('printing'), die_pct: read('die'), coating_pct: read('coating'), pasting_pct: read('pasting'), sorting_pct: read('sorting'), embellish_pct: read('embellish') };
 }
-function adjSplitTotal(p) { return p.printing_pct + p.die_pct + p.coating_pct + p.pasting_pct + p.sorting_pct; }
+function adjSplitTotal(p) { return p.printing_pct + p.die_pct + p.coating_pct + p.pasting_pct + p.sorting_pct + (p.embellish_pct || 0); }
 // Live feedback under each manual field: what that percentage actually
 // works out to for THIS job, in the unit that row is measured in (sheets
 // for printing/coating/die, cartons for sorting/pasting).
@@ -15292,7 +15294,7 @@ function adjSplitChanged(jobId) {
   if (!j || !sheetsEl) return;
   const pcts = adjSplitPcts();
   const overlay = computeWastageAdjSplit(j, parseFloat(sheetsEl.value) || 0, pcts, parseFloat(j.ups) || 0);
-  const PAIRS = [['printing','printing_pct'],['die','die_pct'],['coating','coating_pct'],['pasting','pasting_pct'],['sorting','sorting_pct']];
+  const PAIRS = [['printing','printing_pct'],['die','die_pct'],['coating','coating_pct'],['pasting','pasting_pct'],['sorting','sorting_pct'],['embellish','embellish_pct']];
   for (const [id, pctKey] of PAIRS) {
     const cell = document.getElementById('adj-split-' + id + '-qty');
     if (!cell) continue;
@@ -15408,7 +15410,11 @@ async function openAdjustModal(jobId) {
   // as packets/sheets change, without altering anything else about how the
   // card looks or behaves.
   openEdit(jobId, {
-    particularsOpts: { preview: true, previewOverlay: initialOverlay },
+    particularsOpts: {
+      preview: true,
+      previewOverlay: initialOverlay,
+      previewQtyOverlay: computeWastageAdjQtyChain(j, initialSheets, initialOverlay, ups),
+    },
     topFieldsPreview: initialTopOverlay,
   });
   buildAdjustSidePanel(j, s, ps, matchHtml);
@@ -15461,10 +15467,20 @@ function buildAdjustSidePanel(j, s, ps, matchHtml) {
         <div id="adj-split-manual">
           <div style="font-size:11px;color:var(--text2);margin-bottom:8px;">Split the quantity above across the stages yourself. Starts from the Wastage Settings defaults; must total 100%.</div>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
-            ${[['printing','Printing','printing_pct'],['die','Die Cutting','die_pct'],['coating','Coating','coating_pct'],['pasting','Pasting','pasting_pct'],['sorting','Sorting','sorting_pct']].map(([id, label, key]) => `
+            ${[
+              ['printing','Printing','printing_pct'],
+              ['coating','Coating','coating_pct'],
+              // Sixth stage, only on a job that actually has an
+              // embellishment finish planned — it has its own Sheets Qty +
+              // Waste rows on the card, so it needs its own share.
+              ...(embellishPlannedOnJob(j) ? [['embellish','Embellishment','embellish_pct']] : []),
+              ['die','Die Cutting','die_pct'],
+              ['sorting','Sorting','sorting_pct'],
+              ['pasting','Pasting','pasting_pct'],
+            ].map(([id, label, key]) => `
               <div>
                 <label style="font-size:11px;color:var(--text2);">${label} %</label>
-                <input type="number" id="adj-split-${id}" min="0" max="100" step="0.5" value="${s[key]}" class="filter" style="width:100%;" oninput="adjSplitChanged(${j.id})">
+                <input type="number" id="adj-split-${id}" min="0" max="100" step="0.5" value="${s[key] !== undefined ? s[key] : 0}" class="filter" style="width:100%;" oninput="adjSplitChanged(${j.id})">
                 <div id="adj-split-${id}-qty" style="font-size:10px;color:var(--text2);margin-top:2px;">&nbsp;</div>
               </div>`).join('')}
           </div>
@@ -15523,6 +15539,21 @@ function updateAdjustPreview(jobId) {
   const packets = packetsEl ? (parseFloat(packetsEl.value) || 0) : 0;
   const ups = parseFloat(j.ups) || 0;
   const overlay = computeWastageAdjSplit(j, sheets, adjSplitPcts(), ups);
+  // Production quantities cascade off the same overlay — refresh them in
+  // place alongside the waste rows.
+  const qtyChain = computeWastageAdjQtyChain(j, sheets, overlay, ups);
+  for (const key of Object.keys(WASTAGE_ADJ_QTY_UNIT)) {
+    const el = document.getElementById('wp-' + key);
+    if (!el) continue;
+    const val = qtyChain[key];
+    if (val !== undefined && val > 0) {
+      el.textContent = val.toLocaleString();
+      el.style.display = '';
+    } else {
+      el.textContent = '';
+      el.style.display = 'none';
+    }
+  }
   for (const row of Object.values(WASTAGE_ADJ_ROW_MAP)) {
     const el = document.getElementById('wp-' + row.key);
     if (!el) continue;
@@ -15590,7 +15621,7 @@ async function submitAdjustment(jobId) {
   const notes = '';
   const s = _wastageAdjSettings;
   const pcts = adjSplitPcts();
-  const { printing_pct, die_pct, coating_pct, pasting_pct, sorting_pct } = pcts;
+  const { printing_pct, die_pct, coating_pct, pasting_pct, sorting_pct, embellish_pct } = pcts;
   if (Math.round(adjSplitTotal(pcts)) !== 100) {
     notify(`Wastage split totals ${Math.round(adjSplitTotal(pcts))}% — it must be 100%.`);
     return;
@@ -15625,7 +15656,7 @@ async function submitAdjustment(jobId) {
   }
 
   const splitLine = _adjSplitMode === 'manual'
-    ? `Manual split: Printing ${printing_pct}% · Die ${die_pct}% · Coating ${coating_pct}% · Pasting ${pasting_pct}% · Sorting ${sorting_pct}%.`
+    ? `Manual split: Printing ${printing_pct}% · Coating ${coating_pct}%${embellish_pct ? ` · Embellishment ${embellish_pct}%` : ''} · Die ${die_pct}% · Sorting ${sorting_pct}% · Pasting ${pasting_pct}%.`
     : 'Split from Wastage Settings defaults.';
   const ok = await confirmDialog({
     title: 'Confirm Adjustment',
@@ -15635,7 +15666,7 @@ async function submitAdjustment(jobId) {
   try {
     await api('POST', `/api/wastage-adjustment/adjust/${jobId}`, {
       manual_packets: packets, manual_sheets, split_mode: _adjSplitMode,
-      printing_pct, die_pct, coating_pct, pasting_pct, sorting_pct, notes, allocations,
+      printing_pct, die_pct, coating_pct, pasting_pct, sorting_pct, embellish_pct, notes, allocations,
     });
     closeModal();
     notify(`Job E-${jobId} adjusted and finalized.`);
@@ -19282,13 +19313,80 @@ function openMultiDatePickerPopover(btn, targetEl, segments) {
 // waste is recorded in cartons — the sheet-share converts via the job's
 // Ups (units printed per sheet) before it's added.
 const WASTAGE_ADJ_ROW_MAP = {
-  printing_pct: { key: 'printed_waste_sheets', unit: 'sheets' },
-  coating_pct:  { key: 'uv_waste_sheets',      unit: 'sheets' },
-  die_pct:      { key: 'die_cutting_waste',    unit: 'sheets' },
-  sorting_pct:  { key: 'sorted_cartons_waste', unit: 'cartons' },
-  pasting_pct:  { key: 'pasting_waste_qty',    unit: 'cartons' },
+  printing_pct:  { key: 'printed_waste_sheets', unit: 'sheets' },
+  coating_pct:   { key: 'uv_waste_sheets',      unit: 'sheets' },
+  // Sixth stage — only carries a share on a job that actually has an
+  // embellishment finish planned; 0% (and no field) on every other job.
+  embellish_pct: { key: EMBELLISH_WASTE_KEY,    unit: 'sheets' },
+  die_pct:       { key: 'die_cutting_waste',    unit: 'sheets' },
+  sorting_pct:   { key: 'sorted_cartons_waste', unit: 'cartons' },
+  pasting_pct:   { key: 'pasting_waste_qty',    unit: 'cartons' },
 };
 const WASTAGE_ADJ_ROW_UNIT = Object.fromEntries(Object.values(WASTAGE_ADJ_ROW_MAP).map(r => [r.key, r.unit]));
+
+// The production-quantity rows the adjustment cascades through, in card
+// order, with the unit each is measured in. Purple previews are written
+// against these the same way the waste rows already are.
+const WASTAGE_ADJ_QTY_UNIT = {
+  printed_sheets_qty:     'sheets',
+  coating_sheets_qty:     'sheets',
+  [EMBELLISH_SHEETS_KEY]: 'sheets',
+  die_cutting_sheets:     'sheets',
+  sorted_cartons_qty:     'cartons',
+  pasted_cartons_qty:     'cartons',
+  delivered_cartons_qty:  'cartons',
+};
+
+// Numeric total already recorded on one particulars row — entries[] summed
+// when present, otherwise the pipe-joined quantity string summed the same
+// way readyCartonsTotal() does it.
+function particularsRowTotal(job, key) {
+  const row = job && job.particulars && job.particulars[key];
+  if (!row) return 0;
+  const num = (v) => {
+    const n = parseFloat(String(v == null ? '' : v).replace(/[^0-9.\-]/g, ''));
+    return Number.isFinite(n) ? n : 0;
+  };
+  if (Array.isArray(row.entries) && row.entries.length) {
+    return row.entries.reduce((a, e) => a + num(e && e.qty), 0);
+  }
+  return String(row.quantity || '').split('|').reduce((a, s) => a + num(s), 0);
+}
+
+// Adding manual packets doesn't only move the waste rows — every
+// downstream production quantity moves with them. Each stage's new total
+// is the previous stage's new total minus that stage's new waste, and the
+// sheets→cartons hand-off happens going into Sorting (× Ups):
+//
+//   printed  = recorded printed sheets + manual sheets
+//   coating  = printed  − printing waste
+//   emboss   = coating  − coating waste        (only when planned)
+//   die      = (emboss or coating) − that stage's waste
+//   sorted   = (die − die waste) × Ups
+//   pasted   = sorted   − sorting waste
+//   ready    = pasted   − pasting waste
+//
+// Returns {} when the job has no recorded printed sheets — there's nothing
+// to cascade from, so no purple quantity previews are shown at all.
+function computeWastageAdjQtyChain(job, manualSheets, wasteOverlay, ups) {
+  const printedBase = particularsRowTotal(job, 'printed_sheets_qty');
+  if (!printedBase) return {};
+  const w = (k) => (wasteOverlay && wasteOverlay[k]) || 0;
+  const out = {};
+  out.printed_sheets_qty = Math.round(printedBase + (manualSheets || 0));
+  out.coating_sheets_qty = out.printed_sheets_qty - w('printed_waste_sheets');
+  if (embellishPlannedOnJob(job)) {
+    out[EMBELLISH_SHEETS_KEY] = out.coating_sheets_qty - w('uv_waste_sheets');
+    out.die_cutting_sheets = out[EMBELLISH_SHEETS_KEY] - w(EMBELLISH_WASTE_KEY);
+  } else {
+    out.die_cutting_sheets = out.coating_sheets_qty - w('uv_waste_sheets');
+  }
+  const sheetsIntoSorting = out.die_cutting_sheets - w('die_cutting_waste');
+  out.sorted_cartons_qty = Math.round(sheetsIntoSorting * (ups || 0));
+  out.pasted_cartons_qty = out.sorted_cartons_qty - w('sorted_cartons_waste');
+  out.delivered_cartons_qty = out.pasted_cartons_qty - w('pasting_waste_qty');
+  return out;
+}
 
 // Core math shared by the saved-adjustment overlay and the live Adjust-
 // modal preview. Ignores whatever the operators actually wrote in the
@@ -19427,6 +19525,12 @@ function particularsTable(p, job, opts) {
   const wasteOverlay = opts.preview
     ? (opts.previewOverlay || null)
     : ((job && canWastageAdjust() && view === 'finalized' && _finalizedJobIds.has(job.id)) ? wastageAdjOverlay(job) : null);
+  // The matching production-quantity cascade (Printed Sheets Qty down to
+  // Ready to Delivery Qty). Preview mode gets it from the caller; a saved
+  // adjustment re-derives it from the row the same way wasteOverlay does.
+  const qtyOverlay = opts.preview
+    ? (opts.previewQtyOverlay || null)
+    : ((wasteOverlay && job) ? computeWastageAdjQtyChain(job, (_adjustments[job.id] || {}).manual_sheets || 0, wasteOverlay, parseFloat(job.ups) || 0) : null);
   // Build one machines datalist per relevant stage (dedup) so multiple
   // rows for the same stage (e.g. Printed Sheets + Printed Waste both
   // point at Printing) share a single option list.
@@ -19499,6 +19603,17 @@ function particularsTable(p, job, opts) {
       // The purple figure is now the row's whole new total straight from
       // the wastage formula — it does NOT add onto whatever the operator
       // wrote in the black field above; that value is ignored entirely.
+      // Production-quantity rows carry a purple figure too: adding manual
+      // packets moves printed sheets, and every stage downstream of it
+      // (see computeWastageAdjQtyChain). Same element id scheme as the
+      // waste rows so updateAdjustPreview refreshes both the same way.
+      const isQtyRow = WASTAGE_ADJ_QTY_UNIT[r.key] !== undefined;
+      const qtyNewValue = qtyOverlay ? qtyOverlay[r.key] : undefined;
+      const qtyExtraHtml = (opts.preview && isQtyRow)
+        ? `<div id="wp-${r.key}" style="color:#7c3aed;font-weight:700;font-size:14px;margin-top:2px;${(qtyNewValue !== undefined && qtyNewValue > 0) ? '' : 'display:none;'}">${(qtyNewValue !== undefined && qtyNewValue > 0) ? qtyNewValue.toLocaleString() : ''}</div>`
+        : (qtyNewValue !== undefined && qtyNewValue > 0)
+          ? `<div style="color:#7c3aed;font-weight:700;font-size:14px;margin-top:2px;" title="New ${WASTAGE_ADJ_QTY_UNIT[r.key]} total after the manual adjustment cascades down from Printed Sheets Qty.">${qtyNewValue.toLocaleString()}</div>`
+          : '';
       const wasteNewValue = wasteOverlay ? wasteOverlay[r.key] : undefined;
       const wasteExtraHtml = (opts.preview && isWasteRow)
         // Preview mode always renders the element (even empty/hidden) so
@@ -19515,7 +19630,7 @@ function particularsTable(p, job, opts) {
         <input type="text" id="p-${r.key}-details" value="${detailsVal}">
         <button type="button" class="jc-details-pick" onclick="pickDetailsDate(this, 'p-${r.key}-details')" title="Pick a date">&#128197;</button>
       </td>
-      <td><input type="text" id="p-${r.key}-quantity"  value="${qtyDisplay}"${qtyPlaceholder ? ` placeholder="${qtyPlaceholder}"` : ''}>${wasteExtraHtml}</td>
+      <td><input type="text" id="p-${r.key}-quantity"  value="${qtyDisplay}"${qtyPlaceholder ? ` placeholder="${qtyPlaceholder}"` : ''}>${wasteExtraHtml}${qtyExtraHtml}</td>
       <td><input type="text" id="p-${r.key}-name"      value="${nameVal}" placeholder="Machine" ${machinesListId ? `list="${machinesListId}"` : ''} oninput="refreshRowPersonsList('${r.key}')" onchange="refreshRowPersonsList('${r.key}')"><datalist id="${personsListId}" data-particulars-persons="${r.key}">${personsOpts}</datalist></td>
       <td><input type="text" id="p-${r.key}-signature" value="${sigVal}" placeholder="Operator" list="${personsListId}"></td>
     </tr>`;

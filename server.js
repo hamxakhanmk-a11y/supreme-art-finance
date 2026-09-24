@@ -287,7 +287,7 @@ function getDb() {
 // Sale Report and the Product Rate tab down to Super Admin only.
 // Bumped again for the three-role setup (Super Admin / Admin / Finance): re-seeds finance.role_permissions once so
 // Admin and Finance have full access everywhere except the Users tab (see the finance_roles_simplified_v1 marker).
-const SCHEMA_VERSION = 'v2026-09-19-finance-three-roles';
+const SCHEMA_VERSION = 'v2026-09-24-finance-embellish-pct';
 
 // This app shares its Neon database with the Job Tracker app (it started as
 // a copy of it). Both run initDb() at boot, so they must NOT share the one
@@ -1343,6 +1343,12 @@ async function initDb() {
         UNIQUE(job_id)
       )
     `;
+    // Sixth wastage stage, for jobs that carry an embellishment finish
+    // (Emboss / Hot Foiling / …) — they get their own Sheets Qty + Waste
+    // rows on the card, so the split needs a sixth share for them. Additive
+    // and defaulted to 0, so every existing adjustment keeps its five-way
+    // split meaning exactly what it meant before.
+    await sql`ALTER TABLE job_adjustments ADD COLUMN IF NOT EXISTS embellish_pct NUMERIC NOT NULL DEFAULT 0`;
     // One-time rename: this table (and the 'artline.*' audit_log actions,
     // and the /api/artline/* routes) used to be called "Artline" — retired
     // in favor of the app's own "Wastage Adjustment" name. A plain
@@ -9214,12 +9220,16 @@ app.post('/api/wastage-adjustment/adjust/:jobId', requirePermission('wastage_adj
     const existing = (await sql`SELECT id FROM job_adjustments WHERE job_id = ${jobId}`)[0];
     if (existing) return res.status(400).json({ error: 'Job already adjusted' });
     const b = req.body;
-    const pcts = (b.printing_pct || 0) + (b.die_pct || 0) + (b.coating_pct || 0) + (b.pasting_pct || 0) + (b.sorting_pct || 0);
+    // embellish_pct is the sixth share, only non-zero for a job that
+    // actually carries an embellishment finish — it counts toward the 100%
+    // like any other stage.
+    const embellishPct = b.embellish_pct || 0;
+    const pcts = (b.printing_pct || 0) + (b.die_pct || 0) + (b.coating_pct || 0) + (b.pasting_pct || 0) + (b.sorting_pct || 0) + embellishPct;
     if (Math.round(pcts) !== 100) return res.status(400).json({ error: 'Wastage percentages must sum to 100' });
     if (!b.manual_packets || b.manual_packets <= 0) return res.status(400).json({ error: 'manual_packets must be > 0' });
     const row = (await sql`
-      INSERT INTO job_adjustments (job_id, manual_packets, manual_sheets, printing_pct, die_pct, coating_pct, pasting_pct, sorting_pct, notes, adjusted_by)
-      VALUES (${jobId}, ${b.manual_packets}, ${b.manual_sheets || 0}, ${b.printing_pct}, ${b.die_pct}, ${b.coating_pct}, ${b.pasting_pct}, ${b.sorting_pct}, ${b.notes || ''}, ${req.user?.email || ''})
+      INSERT INTO job_adjustments (job_id, manual_packets, manual_sheets, printing_pct, die_pct, coating_pct, pasting_pct, sorting_pct, embellish_pct, notes, adjusted_by)
+      VALUES (${jobId}, ${b.manual_packets}, ${b.manual_sheets || 0}, ${b.printing_pct}, ${b.die_pct}, ${b.coating_pct}, ${b.pasting_pct}, ${b.sorting_pct}, ${embellishPct}, ${b.notes || ''}, ${req.user?.email || ''})
       RETURNING *
     `)[0];
     // Link to specific manual-job-card transactions being absorbed.
@@ -9241,7 +9251,7 @@ app.post('/api/wastage-adjustment/adjust/:jobId', requirePermission('wastage_adj
     // trail answer "did someone override the defaults here?" without having
     // to compare five numbers against whatever the settings happen to be now.
     const splitMode = b.split_mode === 'manual' ? 'manual' : 'default';
-    const splitText = `Printing ${b.printing_pct}% / Die ${b.die_pct}% / Coating ${b.coating_pct}% / Pasting ${b.pasting_pct}% / Sorting ${b.sorting_pct}%`;
+    const splitText = `Printing ${b.printing_pct}% / Coating ${b.coating_pct}%${embellishPct ? ` / Embellishment ${embellishPct}%` : ''} / Die ${b.die_pct}% / Sorting ${b.sorting_pct}% / Pasting ${b.pasting_pct}%`;
     await logAudit(sql, req, {
       action: 'wastage_adjustment.adjust',
       entityType: 'job',
@@ -9249,7 +9259,7 @@ app.post('/api/wastage-adjustment/adjust/:jobId', requirePermission('wastage_adj
       summary: `Wastage adjustment: Job E-${jobId} — ${b.manual_packets} packets (${(b.manual_sheets || 0).toLocaleString()} sheets) adjusted, ${splitMode} split ${splitText}`,
       metadata: {
         manual_packets: b.manual_packets, manual_sheets: b.manual_sheets || 0, split_mode: splitMode,
-        printing_pct: b.printing_pct, die_pct: b.die_pct, coating_pct: b.coating_pct, pasting_pct: b.pasting_pct, sorting_pct: b.sorting_pct,
+        printing_pct: b.printing_pct, die_pct: b.die_pct, coating_pct: b.coating_pct, pasting_pct: b.pasting_pct, sorting_pct: b.sorting_pct, embellish_pct: embellishPct,
       },
     });
     res.json(row);
