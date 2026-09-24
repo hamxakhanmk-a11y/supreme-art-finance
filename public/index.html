@@ -19346,28 +19346,12 @@ const WASTAGE_ADJ_QTY_UNIT = {
   pasted_cartons_qty:     'cartons',
 };
 
-// Numeric total already recorded on one particulars row — entries[] summed
-// when present, otherwise the pipe-joined quantity string summed the same
-// way readyCartonsTotal() does it.
-function particularsRowTotal(job, key) {
-  const row = job && job.particulars && job.particulars[key];
-  if (!row) return 0;
-  const num = (v) => {
-    const n = parseFloat(String(v == null ? '' : v).replace(/[^0-9.\-]/g, ''));
-    return Number.isFinite(n) ? n : 0;
-  };
-  if (Array.isArray(row.entries) && row.entries.length) {
-    return row.entries.reduce((a, e) => a + num(e && e.qty), 0);
-  }
-  return String(row.quantity || '').split('|').reduce((a, s) => a + num(s), 0);
-}
-
 // Adding manual packets doesn't only move the waste rows — every
 // downstream production quantity moves with them. Each stage's new total
 // is the previous stage's new total minus that stage's new waste, and the
 // sheets→cartons hand-off happens going into Sorting (× Ups):
 //
-//   printed  = recorded printed sheets + manual sheets
+//   printed  = the job's own Sheets Qty + manual sheets
 //   coating  = printed  − printing waste
 //   emboss   = coating  − coating waste        (only when planned)
 //   die      = (emboss or coating) − that stage's waste
@@ -19379,7 +19363,12 @@ function particularsRowTotal(job, key) {
 // Returns {} when the job has no recorded printed sheets — there's nothing
 // to cascade from, so no purple quantity previews are shown at all.
 function computeWastageAdjQtyChain(job, manualSheets, wasteOverlay, ups) {
-  const printedBase = particularsRowTotal(job, 'printed_sheets_qty');
+  // Base is the job's OWN Sheets Qty — the same figure the top-of-card
+  // preview adjusts — never the particulars rows. A station records one
+  // entry per pass, so "5000 | 2000 | 7000" is three passes over the same
+  // job, not 14,000 sheets; summing those inflated the whole chain. The
+  // adjustment does its own arithmetic and doesn't read particulars at all.
+  const printedBase = parseFloat(job && job.sheets) || 0;
   if (!printedBase) return {};
   const w = (k) => (wasteOverlay && wasteOverlay[k]) || 0;
   const out = {};
