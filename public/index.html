@@ -23254,13 +23254,21 @@ function buildPrintCard(j) {
   // Same rule as the on-screen job card: the wastage adjustment overlay
   // only prints when printing from the Finalized tab, so the Delivered
   // tab (and any other context) always prints the untouched original card.
-  const wasteOverlay = (canWastageAdjust() && view === 'finalized' && _finalizedJobIds.has(j.id))
-    ? wastageAdjOverlay(j) : null;
+  // A finalized print is its own document: adjusted figures throughout, and
+  // deliberately no job number and no dates (see below) — it isn't the
+  // original job card any more, so it must not read like one.
+  const isFinalizedPrint = canWastageAdjust() && view === 'finalized' && _finalizedJobIds.has(j.id);
+  const wasteOverlay = isFinalizedPrint ? wastageAdjOverlay(j) : null;
   // Same rule for the top-of-card Sheets Qty / Quantity of Packets / Unit
   // Carton Qty — printed values are REPLACED by the adjusted totals (not
   // shown alongside), same as the particulars rows.
-  const topOverlay = (canWastageAdjust() && view === 'finalized' && _finalizedJobIds.has(j.id))
-    ? wastageAdjTopFieldOverlay(j) : null;
+  const topOverlay = isFinalizedPrint ? wastageAdjTopFieldOverlay(j) : null;
+  // ...and the production quantities that cascade off the adjustment
+  // (Printed Sheets Qty down to Pasted Cartons Qty). Without this the
+  // printed card kept the ORIGINAL quantities beside adjusted waste rows.
+  const qtyOverlay = wasteOverlay
+    ? computeWastageAdjQtyChain(j, parseFloat((_adjustments[j.id] || {}).manual_sheets) || 0, wasteOverlay, parseFloat(j.ups) || 0)
+    : null;
   // Paper source: prefer the live inventory item; fall back to the legacy
   // particulars fields for pre-inventory jobs.
   const invItem = j.inventory_item_id ? inventory.find(i => i.id === j.inventory_item_id) : null;
@@ -23339,13 +23347,16 @@ function buildPrintCard(j) {
     // The formula's new total REPLACES the operator's own printed value
     // outright (not added onto it) — same rule as the on-screen purple figure.
     const wasteNewValue = wasteOverlay ? wasteOverlay[r.key] : undefined;
-    const qtyOut = (wasteNewValue !== undefined && wasteNewValue > 0)
-      ? v(wasteNewValue.toLocaleString())
+    const qtyNewValue = qtyOverlay ? qtyOverlay[r.key] : undefined;
+    const newValue = (wasteNewValue !== undefined && wasteNewValue > 0) ? wasteNewValue
+      : ((qtyNewValue !== undefined && qtyNewValue > 0) ? qtyNewValue : undefined);
+    const qtyOut = newValue !== undefined
+      ? v(newValue.toLocaleString())
       : v(p[r.key]?.quantity);
     return `
     <tr class="pp-data-row">
       <td class="pp-row-label">${r.label}</td>
-      <td>${v(p[r.key]?.details)}</td>
+      <td>${isFinalizedPrint ? '' : v(p[r.key]?.details)}</td>
       <td>${qtyOut}</td>
       <td>${v(p[r.key]?.name)}</td>
       <td>${v(p[r.key]?.signature)}</td>
@@ -23626,7 +23637,7 @@ function buildPrintCard(j) {
     <div class="pc-content">
     <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:4px;">
       <div style="display:flex;flex-direction:column;gap:2px;">
-        <div class="pc-serial" style="text-align:left;padding-top:8px;">E-${v(j.id)}</div>
+        <div class="pc-serial" style="text-align:left;padding-top:8px;">${isFinalizedPrint ? '' : `E-${v(j.id)}`}</div>
         ${(j.stock_group_name || j.group_job_id) ? '<div class="pc-mil-tag pc-value" style="font-size:16pt;font-weight:800;letter-spacing:.08em;line-height:1.1;margin-top:2px;color:#7c3aed !important;">MIL</div>' : ''}
         ${(() => {
           const norm = normalizePriority(j.priority);
