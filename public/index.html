@@ -15258,7 +15258,20 @@ function setAdjustSourceMode(mode, jobId) {
   if (sourcesPane) sourcesPane.style.display = _adjSourceMode === 'manual' ? 'none' : '';
   renderAdjustSources();   // also paints the three mode buttons
   const id = jobId || _adjSplitJobId;
-  if (id) adjSplitChanged(id);
+  if (!id) return;
+  // Seed the Sheets column from the Wastage Settings defaults the first
+  // time this job's panel opens; after that the entered sheets stand.
+  if (_adjSplitSeededFor !== id) {
+    _adjSplitSeededFor = id;
+    _adjSplitJobId = id;
+    const w = _wastageAdjSettings;
+    adjSplitSeedFromPcts(id, {
+      printing_pct: w.printing_pct, coating_pct: w.coating_pct, die_pct: w.die_pct,
+      sorting_pct: w.sorting_pct, pasting_pct: w.pasting_pct, embellish_pct: 0,
+    });
+    return;
+  }
+  adjSplitChanged(id);
 }
 
 // Wastage split module. 'manual' (the default) lets whoever is adjusting
@@ -15269,51 +15282,134 @@ function setAdjustSourceMode(mode, jobId) {
 // changing Wastage Settings later never moves an adjustment already made.
 let _adjSplitMode = 'manual';
 let _adjSplitJobId = null;
-// Which percentages the preview and the save should use right now.
-function adjSplitPcts() {
+let _adjSplitSeededFor = null;
+// The six stages, in card order, as [field id, percentage key].
+const ADJ_SPLIT_STAGES = [
+  ['printing',  'printing_pct'],
+  ['coating',   'coating_pct'],
+  ['embellish', 'embellish_pct'],
+  ['die',       'die_pct'],
+  ['sorting',   'sorting_pct'],
+  ['pasting',   'pasting_pct'],
+];
+// Total sheets the split has to divide up: the job card's own wastage plus
+// the packets being adjusted. This is the number every percentage is a
+// percentage OF, and the number the Sheets column must add back up to.
+function adjSplitTotalSheets(job) {
+  const sheetsEl = document.getElementById('adj-sheets');
+  const manual = sheetsEl ? (parseFloat(sheetsEl.value) || 0) : 0;
+  return baseWastageSheets(job) + manual;
+}
+// Which percentages the preview and the save should use right now. In
+// manual mode these are DERIVED from the Sheets column, which is the real
+// input — a whole-sheet figure converted to a percentage divides exactly,
+// where a typed percentage rounds to a half sheet and leaves the card a
+// few cartons out.
+function adjSplitPcts(job) {
   if (_adjSplitMode !== 'manual') {
     const s = _wastageAdjSettings;
     return { printing_pct: s.printing_pct, die_pct: s.die_pct, coating_pct: s.coating_pct, pasting_pct: s.pasting_pct, sorting_pct: s.sorting_pct, embellish_pct: 0 };
   }
-  // A stage with no field on this job (Embellishment, when none is
-  // planned) reads 0 — it takes no share and the other five make the 100%.
-  const read = (id) => {
-    const el = document.getElementById('adj-split-' + id);
-    return el ? (parseFloat(el.value) || 0) : 0;
-  };
-  return { printing_pct: read('printing'), die_pct: read('die'), coating_pct: read('coating'), pasting_pct: read('pasting'), sorting_pct: read('sorting'), embellish_pct: read('embellish') };
+  const j = job || jobs.find(x => x.id === _adjSplitJobId);
+  const total = j ? adjSplitTotalSheets(j) : 0;
+  const out = {};
+  for (const [id, pctKey] of ADJ_SPLIT_STAGES) {
+    // A stage with no field on this job (Embellishment, when none is
+    // planned) reads 0 — it takes no share, and the rest make the 100%.
+    const el = document.getElementById('adj-split-' + id + '-sheets');
+    const sheets = el ? (parseFloat(el.value) || 0) : 0;
+    out[pctKey] = total > 0 ? (sheets / total) * 100 : 0;
+  }
+  return out;
+}
+// The Sheets column as entered, and what it has to add up to.
+function adjSplitSheetsEntered() {
+  let sum = 0;
+  for (const [id] of ADJ_SPLIT_STAGES) {
+    const el = document.getElementById('adj-split-' + id + '-sheets');
+    if (el) sum += parseFloat(el.value) || 0;
+  }
+  return sum;
 }
 function adjSplitTotal(p) { return p.printing_pct + p.die_pct + p.coating_pct + p.pasting_pct + p.sorting_pct + (p.embellish_pct || 0); }
 // Exactly 100, give or take float noise. Deliberately NOT Math.round() —
 // that accepted anything from 99.5 to 100.5, so a split adding to 99.9
 // reported "Total 100%" and saved a tenth of a percent short.
 function splitTotalsOneHundred(p) { return Math.abs(adjSplitTotal(p) - 100) <= 0.01; }
-// Live feedback under each manual field: what that percentage actually
-// works out to for THIS job, in the unit that row is measured in (sheets
-// for printing/coating/die, cartons for sorting/pasting).
+// Fill the Sheets column from a set of percentages, then re-render. Used on
+// open (from the Wastage Settings defaults) and whenever the packets change
+// (from whatever percentages are on screen), so the split keeps its shape
+// instead of going stale against a new total.
+function adjSplitSeedFromPcts(jobId, pcts) {
+  const j = jobs.find(x => x.id === jobId);
+  if (!j) return;
+  const total = adjSplitTotalSheets(j);
+  for (const [id, pctKey] of ADJ_SPLIT_STAGES) {
+    const shEl = document.getElementById('adj-split-' + id + '-sheets');
+    if (!shEl) continue;
+    shEl.value = Math.round(((pcts[pctKey] || 0) / 100) * total);
+  }
+  adjSplitChanged(jobId);
+}
+// Typed a percentage: convert it to whole sheets and let the Sheets column
+// take over. The percentage then re-derives from those whole sheets, so
+// what's shown is always exactly what will be saved — type 0.8% on a 690
+// sheet total and it settles on 6 sheets / 0.87%, not a phantom 5.52.
+function adjSplitPctEdited(jobId, id) {
+  const j = jobs.find(x => x.id === jobId);
+  const pctEl = document.getElementById('adj-split-' + id);
+  const shEl  = document.getElementById('adj-split-' + id + '-sheets');
+  if (!j || !pctEl || !shEl) return;
+  const total = adjSplitTotalSheets(j);
+  shEl.value = Math.round(((parseFloat(pctEl.value) || 0) / 100) * total);
+  adjSplitChanged(jobId);
+}
+// Typed a sheet count: that's the authoritative figure, so just re-render.
+function adjSplitSheetsEdited(jobId) {
+  adjSplitChanged(jobId);
+}
+// Repaint the percentage inputs, the per-stage carton hints, and the two
+// totals under the grid, then refresh the job card preview.
 function adjSplitChanged(jobId) {
   _adjSplitJobId = jobId;
   const j = jobs.find(x => x.id === jobId);
   const sheetsEl = document.getElementById('adj-sheets');
   if (!j || !sheetsEl) return;
-  const pcts = adjSplitPcts();
-  const overlay = computeWastageAdjSplit(j, parseFloat(sheetsEl.value) || 0, pcts, parseFloat(j.ups) || 0);
-  const PAIRS = [['printing','printing_pct'],['die','die_pct'],['coating','coating_pct'],['pasting','pasting_pct'],['sorting','sorting_pct'],['embellish','embellish_pct']];
-  for (const [id, pctKey] of PAIRS) {
+  const ups = parseFloat(j.ups) || 0;
+  const totalSheets = adjSplitTotalSheets(j);
+  const pcts = adjSplitPcts(j);
+  const overlay = computeWastageAdjSplit(j, parseFloat(sheetsEl.value) || 0, pcts, ups);
+  for (const [id, pctKey] of ADJ_SPLIT_STAGES) {
+    const pctEl = document.getElementById('adj-split-' + id);
+    if (pctEl && document.activeElement !== pctEl) {
+      pctEl.value = +(pcts[pctKey] || 0).toFixed(2);
+    }
+    // Carton stages are measured in cartons on the card, so show what the
+    // sheet figure becomes there; sheet stages need no restatement.
     const cell = document.getElementById('adj-split-' + id + '-qty');
-    if (!cell) continue;
-    const row = WASTAGE_ADJ_ROW_MAP[pctKey];
-    const val = row ? overlay[row.key] : 0;
-    cell.innerHTML = val > 0 ? `= ${val.toLocaleString()} ${row.unit}` : '&nbsp;';
+    if (cell) {
+      const row = WASTAGE_ADJ_ROW_MAP[pctKey];
+      const val = row ? overlay[row.key] : 0;
+      cell.innerHTML = (row && row.unit === 'cartons' && val > 0)
+        ? `= ${val.toLocaleString()} cartons` : '&nbsp;';
+    }
   }
+  const entered = adjSplitSheetsEntered();
   const warn = document.getElementById('adj-split-warn');
   if (warn) {
-    // Shows the REAL total, not a rounded one — rounding was reporting
-    // "Total 100%" for a split that actually came to 99.9%.
-    const total = adjSplitTotal(pcts);
-    const ok = splitTotalsOneHundred(pcts);
+    // Sheets are what actually has to balance — percentages are derived, so
+    // they total 100% precisely when the sheets total the required figure.
+    const short = +(totalSheets - entered).toFixed(2);
+    const ok = Math.abs(short) < 1;
     warn.style.color = ok ? 'var(--text2)' : '#dc2626';
-    warn.textContent = ok ? 'Total 100%' : `Total ${+total.toFixed(2)}% — must be 100%.`;
+    warn.innerHTML = ok
+      ? `Total 100% &middot; <b>${Math.round(entered).toLocaleString()}</b> of ${Math.round(totalSheets).toLocaleString()} sheets`
+      : `<b>${Math.round(entered).toLocaleString()}</b> of ${Math.round(totalSheets).toLocaleString()} sheets &mdash; ${short > 0 ? `${Math.abs(short).toLocaleString()} still to assign` : `${Math.abs(short).toLocaleString()} over`}.`;
+  }
+  const mk = document.getElementById('adj-split-makeup');
+  if (mk) {
+    mk.innerHTML = `Total to split: <b>${Math.round(totalSheets).toLocaleString()}</b> sheets ` +
+      `(${Math.round(baseWastageSheets(j)).toLocaleString()} existing wastage + ${Math.round(parseFloat(sheetsEl.value) || 0).toLocaleString()} adjusted)`;
   }
   updateAdjustPreview(jobId);
 }
@@ -15374,6 +15470,8 @@ async function openAdjustModal(jobId) {
   let matchHtml = '<div style="font-size:12px;color:var(--text2);">Loading matching manual consumption...</div>';
   _adjModalTxMatches = [];
   _adjSourceMode = 'manual';
+  // Fresh panel — re-seed the Sheets column from the current defaults.
+  _adjSplitSeededFor = null;
   _adjSelectedSources = new Set();
   try {
     const txs = await api('GET', '/api/wastage-adjustment/unallocated');
@@ -15471,7 +15569,8 @@ function buildAdjustSidePanel(j, s, ps, matchHtml) {
         <div id="adj-pane-manual">
           <div class="dash-flbl" style="margin-bottom:8px;">Wastage Split</div>
         <div id="adj-split-manual">
-          <div style="font-size:11px;color:var(--text2);margin-bottom:8px;">Split the quantity above across the stages yourself. Starts from the Wastage Settings defaults; must total 100%.</div>
+          <div style="font-size:11px;color:var(--text2);margin-bottom:8px;">Split the total below across the stages. Type a % and the sheets follow, or type the sheets directly and the % follows &mdash; the sheets are what has to add up.</div>
+          <div id="adj-split-makeup" style="font-size:11px;color:var(--text2);margin-bottom:8px;">&nbsp;</div>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
             ${[
               ['printing','Printing','printing_pct'],
@@ -15485,8 +15584,13 @@ function buildAdjustSidePanel(j, s, ps, matchHtml) {
               ['pasting','Pasting','pasting_pct'],
             ].map(([id, label, key]) => `
               <div>
-                <label style="font-size:11px;color:var(--text2);">${label} %</label>
-                <input type="number" id="adj-split-${id}" min="0" max="100" step="0.5" value="${s[key] !== undefined ? s[key] : 0}" class="filter" style="width:100%;" oninput="adjSplitChanged(${j.id})">
+                <label style="font-size:11px;color:var(--text2);">${label}</label>
+                <div style="display:flex;gap:4px;align-items:center;">
+                  <input type="number" id="adj-split-${id}" min="0" max="100" step="0.5" value="${s[key] !== undefined ? s[key] : 0}" title="Percentage of the total wastage sheets" class="filter" style="width:100%;min-width:0;" oninput="adjSplitPctEdited(${j.id}, '${id}')">
+                  <span style="font-size:11px;color:var(--text2);flex:0 0 auto;">%</span>
+                  <input type="number" id="adj-split-${id}-sheets" min="0" step="1" value="0" title="Sheets for this stage — the figure that actually has to add up. Edit it and the percentage follows." class="filter" style="width:100%;min-width:0;" oninput="adjSplitSheetsEdited(${j.id})">
+                  <span style="font-size:11px;color:var(--text2);flex:0 0 auto;">sh</span>
+                </div>
                 <div id="adj-split-${id}-qty" style="font-size:10px;color:var(--text2);margin-top:2px;">&nbsp;</div>
               </div>`).join('')}
           </div>
@@ -15602,7 +15706,7 @@ function adjPacketsChanged(jobId) {
   const ps = packetSize(invIt ? invIt.paper_type : j.paper || '') * jobCutPieces(j);
   const packets = parseFloat(packetsEl.value) || 0;
   sheetsEl.value = Math.round(packets * ps);
-  adjSplitChanged(jobId);
+  adjSplitSeedFromPcts(jobId, adjSplitPcts(j));
 }
 
 function adjSheetsChanged(jobId) {
@@ -15617,7 +15721,7 @@ function adjSheetsChanged(jobId) {
   const ps = packetSize(invIt ? invIt.paper_type : j.paper || '') * jobCutPieces(j);
   const sheets = parseFloat(sheetsEl.value) || 0;
   packetsEl.value = ps ? +(sheets / ps).toFixed(2) : 0;
-  adjSplitChanged(jobId);
+  adjSplitSeedFromPcts(jobId, adjSplitPcts(j));
 }
 
 async function submitAdjustment(jobId) {
@@ -19417,6 +19521,18 @@ function computeWastageAdjSplit(job, manualSheets, pcts, ups) {
   for (const [pctKey, row] of Object.entries(WASTAGE_ADJ_ROW_MAP)) {
     const stageSheets = totalSheets * ((pcts && pcts[pctKey]) || 0) / 100;
     overlay[row.key] = row.unit === 'cartons' ? Math.round(stageSheets * (ups || 0)) : Math.round(stageSheets);
+  }
+  // Land the card exactly on what shipped. The job's own wastage in sheets
+  // is (Unit Carton Qty − delivered) ÷ Ups, which is usually NOT a whole
+  // number — 1,926 cartons over 15 ups is 128.4 sheets — so no whole-sheet
+  // split can hit it dead on, and the leftover fraction shows up at the
+  // bottom as Pasted − Pasting Waste missing Ready to Delivery Qty by a few
+  // cartons. Pasting Waste is the last figure on the card with nothing
+  // below it to contradict, so it takes that sub-sheet remainder and every
+  // adjacent pair of rows then reads exactly right.
+  const chain = computeWastageAdjQtyChain(job, manualSheets, overlay, ups);
+  if (chain.pasted_cartons_qty !== undefined && delivered > 0) {
+    overlay.pasting_waste_qty = Math.max(0, Math.round(chain.pasted_cartons_qty - delivered));
   }
   return overlay;
 }
