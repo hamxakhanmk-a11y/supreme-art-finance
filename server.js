@@ -229,12 +229,16 @@ app.get('/config.js', (req, res) => {
 // The logo effectively never changes, so the CDN caches it for a year; a
 // deploy purges Vercel's cache anyway, so a replaced asset still ships
 // immediately. Browsers re-check daily as a safety valve.
-// index.html is the exception: it must NEVER be cached, because that's what
-// guarantees everyone picks up the newest deploy right away.
+// index.html is the exception: 'no-cache' makes the browser revalidate it
+// on every load, so everyone still picks up the newest deploy right away.
+// Deliberately NOT 'no-store' — that forbids keeping a copy to revalidate
+// against, so a 1.5 MB page (405 KB brotli) was re-downloaded in full on
+// every single load. With a stored copy the same check costs a 304 and
+// zero bytes, and only actually transfers when the build has changed.
 app.use(express.static(path.join(__dirname, 'public'), {
   setHeaders: (res, filePath) => {
     if (filePath.endsWith('.html')) {
-      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      res.setHeader('Cache-Control', 'no-cache, must-revalidate');
     } else {
       res.setHeader('Cache-Control', 'public, max-age=86400, s-maxage=31536000');
     }
@@ -9393,9 +9397,10 @@ app.get('/favicon.ico', (req, res) => {
 
 app.get('*', (req, res) => {
   // Deep links (/jobs, /station, …) fall through to here and get the app
-  // shell. Same rule as above: never cache it, or users end up running an
-  // old build against the live API.
-  res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+  // shell. Same rule as above: revalidate every load so nobody runs an old
+  // build against the live API, but keep a stored copy so an unchanged
+  // build costs a 304 rather than the whole page.
+  res.set('Cache-Control', 'no-cache, must-revalidate');
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
