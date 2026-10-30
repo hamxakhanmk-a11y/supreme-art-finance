@@ -1386,6 +1386,19 @@
     :is(#jobs-mode, #client-view-mode) .stage-pill.s-done,
     :is(#jobs-mode, #client-view-mode) .stage-pill.s-active { animation: none; }
   }
+  /* Long lists go still. These are box-shadow animations, which the
+     compositor can't handle on its own — every animated element repaints
+     on every frame, forever. Nine stage pills plus a status badge per row
+     is fine for a handful of rows and ruinous for hundreds: at 890
+     delivered jobs that was 8,900 elements repainting continuously, which
+     is what made the app feel stuck on a weaker PC long after it had
+     finished loading. renderJobsCompact/renderJobsCards add this class
+     once the list is big enough for that to bite. */
+  #jobs-list.jobs-list--still .stage-pill,
+  #jobs-list.jobs-list--still .badge {
+    animation: none !important;
+    will-change: auto !important;
+  }
   /* Half-filled Delivered pill for partial deliveries: green — same
      palette as partial-ready — because 'some cartons are complete /
      shipped' reads as GREEN in the pipeline. Full green = done, full
@@ -5318,9 +5331,13 @@ function clearNewJobSelection() {
   render();
 }
 
+// Past this many rows the per-row box-shadow animations cost far more
+// than they convey, so the list renders still. See .jobs-list--still.
+const JOBS_LIST_STILL_AFTER = 40;
 function renderJobsCompact() {
   const filtered = sortJobsForView(getFiltered());
   const el = document.getElementById('jobs-list');
+  el.classList.toggle('jobs-list--still', filtered.length > JOBS_LIST_STILL_AFTER);
   if (!filtered.length) {
     el.innerHTML = `<div class="empty">${jobs.length===0?'No jobs yet. Click <b>+ New Job</b> to create the first job card.':'No jobs match this filter.'}</div>`;
     return;
@@ -5556,6 +5573,7 @@ function renderJobRowCompact(j, opts) {
 function renderJobsCards() {
   const filtered = sortJobsForView(getFiltered());
   const el = document.getElementById('jobs-list');
+  el.classList.toggle('jobs-list--still', filtered.length > JOBS_LIST_STILL_AFTER);
   if (!filtered.length) {
     el.innerHTML = `<div class="empty">${jobs.length===0?'No jobs yet. Click <b>+ New Job</b> to create the first job card.':'No jobs match this filter.'}</div>`;
     return;
@@ -6664,12 +6682,22 @@ function setJobsViewMode(m) {
   localStorage.setItem('sa_jobs_view', m);
   renderJobs();
 }
-function setFilter(v) { filterText=v; renderJobs(); }
+// The free-text filters re-render the whole list, which at 890 rows is a
+// couple of hundred milliseconds — far too slow to run on every keystroke,
+// so typing stuttered. Coalesce to one render once typing pauses, the same
+// 200ms debounce the Jobs Report search already uses. The dropdown filters
+// below fire once per change and stay immediate.
+let _jobsFilterTimer = null;
+function renderJobsDebounced() {
+  clearTimeout(_jobsFilterTimer);
+  _jobsFilterTimer = setTimeout(renderJobs, 200);
+}
+function setFilter(v) { filterText=v; renderJobsDebounced(); }
 function setStageFilter(v) { filterStage=v; renderJobs(); }
 function setClientFilter(v) { filterClient=v; renderJobs(); }
 function setMachineFilter(v) { filterMachine=v; renderJobs(); }
-function setPOFilter(v)      { filterPO = v; renderJobs(); }
-function setChallanFilter(v) { filterChallan = v; renderJobs(); }
+function setPOFilter(v)      { filterPO = v; renderJobsDebounced(); }
+function setChallanFilter(v) { filterChallan = v; renderJobsDebounced(); }
 // Shade Cards toggle: '' = show everything, 'only' = show shade-card jobs.
 // The dedicated toggle button in the toolbar drives this — one click ON,
 // second click OFF, mirroring the Pending Stock button in inventory.
